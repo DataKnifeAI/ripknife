@@ -221,5 +221,5 @@ def test_line_rotating_handler_counts_existing_lines(tmp_path: Path) -> None:
 
 def test_constants() -> None:
     assert logging_setup.MAX_LOG_LINES == 50_000
-    assert logging_setup.BACKUP_COUNT == 3
+    assert logging_setup.BACKUP_COUNT == 2
     assert logging_setup.ERROR_LOG.name == "error.log"

@@ -15,7 +15,7 @@ SCAN_LOG = LOG_ROOT / "scan.log"
 ERROR_LOG = LOG_ROOT / "error.log"
 
 MAX_LOG_LINES = 50_000
-BACKUP_COUNT = 3
+BACKUP_COUNT = 2
 
 _LOGGER_NAME = "videosripper"
 _DEBUG_LOGGER_NAME = "videosripper.debug"

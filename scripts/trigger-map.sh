@@ -83,6 +83,11 @@ EOF
 )
 
 log "Starting map for DISC_ID=${DISC_ID} scan=${SCAN_JSON}"
+log "PROMPT_BEGIN DISC_ID=${DISC_ID}"
+printf '%s\n' "$PROMPT" >>"$LOG"
+log "PROMPT_END DISC_ID=${DISC_ID}"
+log "Launching agent: ${AGENT} -p --trust --force --approve-mcps --workspace ${WORKSPACE}"
+log "AGENT_OUTPUT_BEGIN DISC_ID=${DISC_ID}"
 
 set +e
 timeout "${TIMEOUT_SEC}" "$AGENT" -p --trust --force --approve-mcps \
@@ -90,6 +95,8 @@ timeout "${TIMEOUT_SEC}" "$AGENT" -p --trust --force --approve-mcps \
   "$PROMPT" >>"$LOG" 2>&1
 status=$?
 set -e
+
+log "AGENT_OUTPUT_END DISC_ID=${DISC_ID} exit=${status}"
 
 if [[ $status -eq 0 && -f "$READY_YAML" ]]; then
   log "SUCCESS: wrote ${READY_YAML}"
