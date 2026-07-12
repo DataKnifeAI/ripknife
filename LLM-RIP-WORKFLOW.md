@@ -231,6 +231,82 @@ Some Blu-rays expose hundreds of playlists with the **same name and duration** (
 - **Validation:** `validate --scan-json` and `rip-watcher` reject fixed/auto titles outside the dominant cluster or on decoy indices.
 - **Scan table:** Notes column marks recommended feature and decoy outliers on obfuscated discs.
 
+### Title research checklist for LLM mapper
+
+Use this when **Process 1.5** (`scripts/trigger-map.sh` / Cursor `agent -p`) authors `staging/ready/<disc-id>.yaml` from `staging/pending/*.scan.json`. Wrong title picks waste hours on copy-protect loops, decoy playlists, or scene-jump dummies — research before writing YAML.
+
+**1. Read all inputs**
+
+- `staging/pending/<disc-id>.scan.json` — full title list (`index`, `name`, `duration`, `duration_sec`, `size_bytes`) plus `obfuscation` when present.
+- `staging/pending/<disc-id>.meta.json` — `disc_name`, `title_count`, `minlength`, and flattened `recommended_title` / `decoy_indices` when obfuscated.
+- Scan **Notes** (console `videosripper scan --json` table, or re-run `scan-device --json` and inspect suspicious names / short durations). Flags: `suspicious:`, `short title; later title N`, `recommended feature`, `decoy:`.
+- `configs/registry.yaml` — if a similar `disc_name` already has a manifest, copy its `tracks[]` / `skips[]` pattern and episode numbering; do not invent indices from memory.
+- This file — season/disc tables and [Title validation](#title-validation-avoid-wrong--copy-protected-titles) rules.
+
+**2. Scene-jump / dummy early titles (DVD TV)**
+
+- Title **0** is usually **Play All** — add to `skips[]`; never map episode slots to it on multi-episode discs.
+- First few indices may be **menus, FBI/COPYRIGHT loops, or copy-protect dummies** while the real episode sits at a **higher** index. If title N is suspicious (short, bad name, Notes flag) inspect N+1, N+2, …
+- **Multi-angle DVDs:** consecutive even/odd pairs — rip one angle only; document the skipped angle in `skips[]`.
+- **Missing menu numbers** (e.g. menu 15 absent, jumps 14→16): real episode may live in **play-all** — use `extract_chapter` (see S3 Disc 1).
+- **Paired episodes:** ~20+ min, 2 chapters → `split` at ffprobe chapter boundary.
+- Spot-check uncertain mappings: `scripts/videosripper preview --title N --chapter 2 --offset 0 --seconds 45 --scan-json staging/pending/<disc-id>.scan.json` (DVD chapter 2 skips FBI/menu lead-in).
+
+**3. Obfuscated Blu-ray playlists (movies and some TV)**
+
+When `obfuscation.detected` is true (or `title_count` > 50 with many identical names/durations):
+
+- **Dominant cluster:** `duplicate_count` titles share `dominant_duration_sec` — the real feature is one of these, not a duration outlier.
+- **`recommended_title`:** lowest index in the dominant cluster — prefer this for `title_selection.fixed` or trust `auto_feature` (it already prefers the cluster).
+- **`decoy_indices`:** add **every** index to `skips[]` with reason `decoy playlist (duration outlier)`.
+- Do **not** pick a decoy because it is longer/shorter unless preview proves otherwise.
+- Document other duplicate indices in `skips[]` as `duplicate playlist (not selected)` when helpful — only the chosen feature index is ripped.
+- Example: John Wick Chapter 2 — 330 titles, 321× 2:02:22, decoy at 169 (2:04:08); use title **0** + `auto_feature`, skip decoys.
+
+**4. RCE / copy-protect decoys**
+
+- Reject titles whose **names** match COPYRIGHT, FBI, WARNING, anti-piracy strings (see scan Notes / `title_verify` suspicious-name list).
+- Reject durations **below `minlength`** or standalone TV episodes **under ~8 min** after the filter.
+- **Movies:** short promos before the feature (Scarface title 0 ~27 min vs title 1 ~2:50 feature) — use `title_selection.mode: auto_feature` with sensible `min_duration_sec` / `min_size_bytes`, or `fixed` at the verified feature index.
+- If still uncertain after scan: `scripts/videosripper preview --title N --offset 60 --seconds 45 --scan-json …` and check PASS/FAIL in `logs/debug.log`.
+
+**5. Same-duration scrambled playlists**
+
+- Hundreds of playlists with the **same name and duration** — any index in the dominant cluster may work; **pick `recommended_title`** (lowest index) for reproducibility.
+- List non-selected outliers and short menu snippets in `skips[]`; note alternates in a YAML comment above `title_selection` or `tracks` (e.g. `# title 0 chosen; 321 duplicates at 7342s; decoy 169 skipped`).
+
+**6. Required manifest fields**
+
+- Always set `meta.disc_name` from scan `disc_name` (watcher/registry verification).
+- Set `meta.minlength` to match the scan (default 300).
+- For movies: `title_selection.mode: auto_feature` unless a specific index is proven; include `validation` floors.
+- For TV: map `tracks[].makemkv_title` to TINFO indices from the scan; `skips[]` for play-all, extras, decoys, and skipped angles.
+
+**7. Validate before ready**
+
+```bash
+# Write to staging/ready/<disc-id>.yaml first, then:
+scripts/videosripper validate staging/ready/<disc-id>.yaml --with-scan \
+  --scan-json staging/pending/<disc-id>.scan.json
+```
+
+Fix all errors (unknown title index, decoy pick, below minlength, suspicious name) before Process 2 moves the manifest to `configs/` or rips.
+
+**Optional preview commands**
+
+```bash
+# DVD episode spot-check (chapter 2, no FBI lead-in)
+scripts/videosripper preview --title 1 --chapter 2 --seconds 45 \
+  --scan-json staging/pending/<disc-id>.scan.json
+
+# Blu-ray / long title — skip menu loops
+scripts/videosripper preview --title 0 --offset 120 --seconds 60 \
+  --scan-json staging/pending/<disc-id>.scan.json --keep
+
+# After draft YAML exists
+scripts/videosripper preview --title 3 --config staging/ready/<disc-id>.yaml --offset 60
+```
+
 ### 3. Create or edit YAML manifest
 
 1. Map each makemkv title → **TheTVDB DVD order** `Nx##` + episode title ([TheTVDB DVD order](https://thetvdb.com/series/spongebob-squarepants/seasons/dvd/)).

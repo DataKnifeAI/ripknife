@@ -90,8 +90,14 @@ def handle_disc(args: argparse.Namespace, logger) -> None:
                 "title_count": len(scan_data.get("titles", [])),
                 "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
-            if scan_data.get("obfuscation"):
-                meta["obfuscation"] = scan_data["obfuscation"]
+            obf = scan_data.get("obfuscation")
+            if obf:
+                meta["obfuscation"] = obf
+                if obf.get("recommended_title") is not None:
+                    meta["recommended_title"] = obf["recommended_title"]
+                decoys = obf.get("decoy_indices")
+                if decoys:
+                    meta["decoy_indices"] = decoys
             meta_json.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
             logger.info(
                 "Scan complete id=%s disc=%s titles=%s",

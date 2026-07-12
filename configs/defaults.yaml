@@ -1,7 +1,10 @@
 # Default VideosRipper settings (reference; manifests override per-disc)
+# LLM mapper: always set meta.disc_name from scan; document title picks in YAML
+# comments when obfuscation/decoys/scene-jumps apply (see LLM-RIP-WORKFLOW.md).
 meta:
   device: dev:/dev/sr0
   minlength: 300
+  # disc_name: set per disc from MakeMKV scan (required for watcher verification)
 
 paths:
   root: /mnt/game1/VideosRipper

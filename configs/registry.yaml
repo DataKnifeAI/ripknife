@@ -1,6 +1,10 @@
 # Disc registry — maps MakeMKV disc_name values to known manifests.
 # Process 1 uses this to skip LLM mapping; Process 2 verifies before rip.
 #
+# LLM mapper (trigger-map.sh): cross-reference entries here and matching manifests
+# under configs/ when researching makemkv title indices — do not guess from memory.
+# For unknown discs, follow LLM-RIP-WORKFLOW.md "Title research checklist for LLM mapper".
+#
 # match entries: exact strings (case-insensitive), substrings, or regex patterns.
 
 entries:
