@@ -1,28 +1,31 @@
-# Default VideosRipper settings (reference; manifests override per-disc)
+# Default VideosRipper settings (reference template — not auto-loaded/merged)
+# Copy sections into per-disc manifests under configs/{anime,shows,movies,spongebob}/.
 # LLM mapper: always set meta.disc_name from scan; document title picks in YAML
 # comments when obfuscation/decoys/scene-jumps apply (see LLM-RIP-WORKFLOW.md).
+
+# --- Shared meta (all kinds) ---
 meta:
-  device: dev:/dev/sr0
-  minlength: 300
+  device: dev:/dev/sr0           # override via VIDEOSRIPPER_DEVICE env
+  minlength: 300                 # seconds; use same value for scan and rip
   # disc_name: set per disc from MakeMKV scan (required for watcher verification)
 
+# --- Local paths (env overrides in videosripper/paths.py) ---
 paths:
   root: /mnt/game1/VideosRipper
-  output: output
-  staging: staging
-  logs: logs
-  nas_tv: /mnt/tn-sas/Anime/Spongebob Squarepants
-  nas_shows: /mnt/tn-sas/Shows
-  nas_movies: /mnt/tn-sas/Movies
+  output: output                 # VIDEOSRIPPER_OUTPUT
+  staging: staging               # VIDEOSRIPPER_STAGING
+  logs: logs                     # VIDEOSRIPPER_LOGS
+  nas_anime: /mnt/tn-sas/Anime/  # per-show subfolder, e.g. .../Anime/Naruto Shippuden
+  nas_shows: /mnt/tn-sas/Shows/  # per-show subfolder, e.g. .../Shows/Breaking Bad
+  nas_movies: /mnt/tn-sas/Movies/
 
-naming:
-  show: SpongeBob SquarePants
-  pattern: "{show} - {season}x{episode} - {title}.mkv"
-
+# --- NAS share roots (maps to paths.NAS_SHARE / SHOWS_NAS / MOVIES_NAS via env) ---
 nas:
-  share: /mnt/tn-sas/Anime/Spongebob Squarepants  # tv_disc default when omitted/null (paths.NAS_SHARE)
-  shows_share: /mnt/tn-sas/Shows                  # TV Shows share (paths.SHOWS_NAS); set nas.share per show
-  movies_share: /mnt/tn-sas/Movies                # movie default when nas.movies and share omitted (paths.MOVIES_NAS)
+  # tv_disc: set share to <nas_roots.anime or nas_roots.shows>/<Show Name>
+  # omit or null → paths.NAS_SHARE (env VIDEOSRIPPER_NAS; code default is legacy SpongeBob path)
+  share: null
+  shows_share: /mnt/tn-sas/Shows/   # paths.SHOWS_NAS (env VIDEOSRIPPER_SHOWS_NAS)
+  movies_share: /mnt/tn-sas/Movies/  # paths.MOVIES_NAS when nas.movies: true (env VIDEOSRIPPER_MOVIES_NAS)
 
 post:
   eject: true                    # eject after successful real rip only; never scan/dry-run/validate
@@ -38,3 +41,77 @@ retry:
   delay_sec: 30                  # seconds to wait before retry (no eject between retries)
   stall_retry: true              # retry same title after stall timeout (uses count)
   nas_retries: 1                 # extra rsync attempts; then ALERT and continue rip
+
+# =============================================================================
+# TV disc overrides (kind: tv_disc) — copy into per-disc manifest
+# =============================================================================
+#
+# meta:
+#   id: my-show-s1-disc1
+#   show: My Show Name
+#   season: 1
+# output:
+#   season_dir: My Show Name/Season 1   # local output under output/
+#   # or season_dir: Season 1           # when show name omitted from local path
+# nas:
+#   share: /mnt/tn-sas/Shows/My Show Name
+#   subdir: Season 1                    # when output.season_dir includes show name
+# tracks:
+#   - { slot: 1, makemkv_title: 0, episode: "01", title: Episode Title }
+# skips:
+#   - { makemkv_title: 0, reason: play-all }
+#
+# --- Anime example (Japanese audio + English subs) ---
+# meta:
+#   show: Naruto Shippuden
+#   season: 12
+# output:
+#   season_dir: Naruto Shippuden/Season 12
+# nas:
+#   share: /mnt/tn-sas/Anime/Naruto Shippuden
+#   subdir: Season 12
+# stream_defaults:
+#   keep_all_tracks: true
+#   audio_default: jpn
+#   subtitle_default: eng
+#
+# --- Live-action show example (English audio, no default subtitle) ---
+# meta:
+#   show: Breaking Bad
+#   season: 1
+# output:
+#   season_dir: Breaking Bad/Season 1
+# nas:
+#   share: /mnt/tn-sas/Shows/Breaking Bad
+#   subdir: Season 1
+# stream_defaults:
+#   keep_all_tracks: true
+#   audio_default: eng
+#   # subtitle_default omitted → clear/disable subtitle default disposition
+#
+# stream_defaults guidance:
+#   - Anime: jpn audio + eng subs (discs may ship with eng default — remux flips it)
+#   - Shows: eng audio, omit subtitle_default (tracks kept, none marked default)
+#   - keep_all_tracks: true selects all audio/subs during MakeMKV rip
+
+# =============================================================================
+# Movie overrides (kind: movie) — copy into per-disc manifest
+# =============================================================================
+#
+# meta:
+#   id: my-movie-2011
+#   title: My Movie (2011)
+#   disc_pattern: MY_MOVIE          # optional scan hint
+# output:
+#   dir: Movies
+#   filename: My Movie (2011).mkv
+# nas:
+#   movies: true
+#   share: /mnt/tn-sas/Movies/      # omit or null → paths.MOVIES_NAS
+# title_selection:
+#   mode: auto_feature
+#   min_duration_sec: 4800
+#   min_size_bytes: 5368709120
+# validation:
+#   min_duration_sec: 4800
+#   min_size_bytes: 5368709120
