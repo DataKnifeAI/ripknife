@@ -145,7 +145,13 @@ def makemkv_lock_path() -> Path:
 
 
 def scan_lock_path() -> Path:
-    return _lock_path("scan")
+    """Same lock as makemkv — all MakeMKV access must be mutually exclusive."""
+    return makemkv_lock_path()
+
+
+def watcher_lock_path(name: str) -> Path:
+    """Per-watcher singleton lock (rip-watcher, disc-watcher)."""
+    return LOG_ROOT / f"{name}.pid.lock"
 
 
 def run_videosripper(args: list[str], *, logger: logging.Logger) -> tuple[int, str]:

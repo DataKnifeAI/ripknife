@@ -15,7 +15,12 @@ ROOT = Path("/mnt/game1/VideosRipper")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from videosripper.models import MovieManifest, TvDiscManifest, load_manifest  # noqa: E402
+from videosripper.models import (  # noqa: E402
+    MovieManifest,
+    TvDiscManifest,
+    load_manifest,
+    movie_output_path,
+)
 from videosripper.paths import LOG_ROOT  # noqa: E402
 from videosripper.paths import ROOT as PKG_ROOT  # noqa: E402
 from videosripper.registry import load_registry, manifest_matches_scan  # noqa: E402
@@ -25,6 +30,7 @@ from videosripper.watcher_util import (  # noqa: E402
     makemkv_lock_path,
     setup_watcher_logger,
     update_state,
+    watcher_lock_path,
 )
 
 READY_DIR = PKG_ROOT / "staging" / "ready"
@@ -133,6 +139,22 @@ def move_yaml(yaml_path: Path, dest_dir: Path, *, reason: str = "") -> None:
         reason_path.write_text(reason + "\n", encoding="utf-8")
 
 
+def already_ripped(manifest: TvDiscManifest | MovieManifest) -> bool:
+    """True when output already satisfies manifest validation floors (local or NAS)."""
+    if isinstance(manifest, MovieManifest):
+        rules = manifest.validation
+        out = movie_output_path(manifest)
+        if out.is_file() and out.stat().st_size >= rules.min_size_bytes:
+            return True
+        if manifest.nas.movies:
+            from videosripper.paths import MOVIES_NAS, resolve_path
+
+            nas_base = resolve_path(manifest.nas.share) if manifest.nas.share else MOVIES_NAS
+            nas_path = nas_base / manifest.output.filename
+            return nas_path.is_file() and nas_path.stat().st_size >= rules.min_size_bytes
+    return False
+
+
 def process_yaml(yaml_path: Path, logger) -> None:
     if not validate_manifest(yaml_path, logger):
         move_yaml(yaml_path, FAILED_DIR, reason="validation failed")
@@ -140,6 +162,12 @@ def process_yaml(yaml_path: Path, logger) -> None:
         return
 
     manifest = load_manifest(yaml_path)
+
+    if already_ripped(manifest):
+        logger.info("Output already complete for %s — moving to done", yaml_path.name)
+        move_yaml(yaml_path, DONE_DIR)
+        update_state("rip_watcher", {"status": "done", "yaml": yaml_path.name, "reason": "already_ripped"})
+        return
 
     with flock(makemkv_lock_path(), blocking=True):
         scan_data = rescan_manifest(manifest, logger)
@@ -181,18 +209,21 @@ def _run_cli(args: list[str]) -> tuple[int, str]:
     return proc.returncode, output
 
 
+def _yaml_seen_key(path: Path) -> tuple[str, float]:
+    return str(path.resolve()), path.stat().st_mtime
+
+
 def watch_loop(args: argparse.Namespace, logger) -> int:
-    seen: set[str] = set()
+    seen: set[tuple[str, float]] = set()
     logger.info("Rip watcher started (poll=%ss)", args.poll_sec)
     update_state("rip_watcher", {"status": "idle"})
 
     while True:
         for yaml_path in list_ready_yamls():
-            key = str(yaml_path.resolve())
-            if key in seen:
-                continue
-            # Wait until file stops changing (writer finished)
             if not _file_stable(yaml_path):
+                continue
+            key = _yaml_seen_key(yaml_path)
+            if key in seen:
                 continue
             seen.add(key)
             process_yaml(yaml_path, logger)
@@ -215,7 +246,19 @@ def main() -> int:
     READY_DIR.mkdir(parents=True, exist_ok=True)
     DONE_DIR.mkdir(parents=True, exist_ok=True)
     FAILED_DIR.mkdir(parents=True, exist_ok=True)
-    return watch_loop(args, logger)
+
+    try:
+        with flock(watcher_lock_path("rip-watcher"), blocking=False):
+            while True:
+                try:
+                    code = watch_loop(args, logger)
+                    return code
+                except Exception:
+                    logger.exception("Rip watcher crashed; restarting in 10s")
+                    time.sleep(10.0)
+    except BlockingIOError:
+        logger.error("Another rip-watcher instance is already running")
+        return 1
 
 
 if __name__ == "__main__":

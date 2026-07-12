@@ -76,10 +76,10 @@ def test_flock_falls_back_when_system_lock_open_fails(
     assert opened == [str(system_lock), str(fallback)]
 
 
-def test_scan_lock_path_uses_logs_when_var_lock_not_writable(
+def test_scan_lock_path_matches_makemkv_lock(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(watcher_util, "LOG_ROOT", tmp_path / "logs")
     monkeypatch.setattr(watcher_util, "_resolved_lock_paths", {})
     monkeypatch.setattr(watcher_util.os, "access", lambda _path, _mode: False)
-    assert watcher_util.scan_lock_path() == tmp_path / "logs" / "scan.lock"
+    assert watcher_util.scan_lock_path() == watcher_util.makemkv_lock_path()

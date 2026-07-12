@@ -25,6 +25,7 @@ from videosripper.watcher_util import (  # noqa: E402
     setup_watcher_logger,
     slugify_disc_id,
     update_state,
+    watcher_lock_path,
 )
 
 PENDING_DIR = PKG_ROOT / "staging" / "pending"
@@ -77,6 +78,23 @@ def handle_disc(args: argparse.Namespace, logger) -> None:
             scan_data = json.loads(output)
             disc_name = scan_data.get("disc_name", "") or "unknown-disc"
             disc_id = slugify_disc_id(disc_name)
+
+            ready_yaml = READY_DIR / f"{disc_id}.yaml"
+            if ready_yaml.is_file():
+                logger.info(
+                    "Ready manifest already exists for %s; skipping map",
+                    disc_id,
+                )
+                update_state(
+                    "disc_watcher",
+                    {
+                        "status": "ready_exists",
+                        "disc_id": disc_id,
+                        "disc_name": disc_name,
+                        "ready_yaml": str(ready_yaml),
+                    },
+                )
+                return
 
             scan_json = PENDING_DIR / f"{disc_id}.scan.json"
             meta_json = PENDING_DIR / f"{disc_id}.meta.json"
@@ -152,16 +170,7 @@ def _scan_device_json(device: str, minlength: int) -> tuple[int, str]:
     return proc.returncode, proc.stdout if proc.returncode == 0 else proc.stdout + proc.stderr
 
 
-def main() -> int:
-    args = parse_args()
-    logger = setup_watcher_logger("disc-watcher", LOG_FILE)
-    logger.info(
-        "Disc watcher started (device=%s poll=%ss debounce=%ss)",
-        args.device,
-        args.poll_sec,
-        args.debounce_sec,
-    )
-
+def _poll_loop(args: argparse.Namespace, logger) -> int:
     was_present = media_present(args.device)
     debounce_started: float | None = None
     if was_present:
@@ -193,6 +202,29 @@ def main() -> int:
 
         was_present = present
         time.sleep(args.poll_sec)
+
+
+def main() -> int:
+    args = parse_args()
+    logger = setup_watcher_logger("disc-watcher", LOG_FILE)
+    logger.info(
+        "Disc watcher started (device=%s poll=%ss debounce=%ss)",
+        args.device,
+        args.poll_sec,
+        args.debounce_sec,
+    )
+
+    try:
+        with flock(watcher_lock_path("disc-watcher"), blocking=False):
+            while True:
+                try:
+                    return _poll_loop(args, logger)
+                except Exception:
+                    logger.exception("Disc watcher crashed; restarting in 10s")
+                    time.sleep(10.0)
+    except BlockingIOError:
+        logger.error("Another disc-watcher instance is already running")
+        return 1
 
 
 if __name__ == "__main__":
