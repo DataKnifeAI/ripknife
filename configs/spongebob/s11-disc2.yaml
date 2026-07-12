@@ -1,0 +1,83 @@
+kind: tv_disc
+meta:
+  id: spongebob-s11-disc2
+  show: SpongeBob SquarePants
+  season: 11
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 11
+  log_file: logs/rip-s11-disc2.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 710.743367
+      outputs:
+        - { episode: "18", title: Cuddle E. Hugs }
+        - { episode: "19", title: Pat the Horse }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 652.401750
+      outputs:
+        - { episode: "20", title: Chatterbox Gary }
+        - { episode: "21", title: "Don't Feed the Clowns" }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 656.405750
+      outputs:
+        - { episode: "22", title: Drive Happy }
+        - { episode: "23", title: Old Man Patrick }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 659.408750
+      outputs:
+        - { episode: "24", title: Fun-Sized Friends }
+        - { episode: "25", title: "Grandmum's the Word" }
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 660.259600
+      outputs:
+        - { episode: "26", title: Doodle Dimension }
+        - { episode: "27", title: Moving Bubble Bass }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 660.409750
+      outputs:
+        - { episode: "28", title: High Sea Diving }
+        - { episode: "29", title: Bottle Burglars }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 661.360700
+      outputs:
+        - { episode: "30", title: "My Leg!" }
+        - { episode: "31", title: Ink Lemonade }
+  - slot: 8
+    makemkv_title: 7
+    split:
+      at_seconds: 658.324333
+      outputs:
+        - { episode: "32", title: "Mustard O' Mine" }
+        - { episode: "33", title: Shopping List }
+  - slot: 9
+    makemkv_title: 8
+    split:
+      at_seconds: 661.360700
+      outputs:
+        - { episode: "34", title: Whale Watching }
+        - { episode: "35", title: Krusty Kleaners }
+skips:
+  - { makemkv_title: 9, reason: play-all (3:18:07) }
+  - { makemkv_title: 10, reason: bonus (~6:53, 413s) }

@@ -1,0 +1,49 @@
+kind: tv_disc
+meta:
+  id: spongebob-s10-disc2
+  show: SpongeBob SquarePants
+  season: 10
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 10
+  log_file: logs/rip-s10-disc2.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 705.938567
+      outputs:
+        - { episode: "15", title: The Incredible Shrinking Sponge }
+        - { episode: "16", title: "Sportz?" }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 651.317333
+      outputs:
+        - { episode: "17", title: The Getaway }
+        - { episode: "18", title: Lost and Found }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 659.325333
+      outputs:
+        - { episode: "19", title: "Patrick's Coupon" }
+        - { episode: "20", title: Out of the Picture }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 946.395450
+      outputs:
+        - { episode: "21", title: Feral Friends }
+        - { episode: "22", title: "Don't Wake Patrick" }
+skips:
+  - { makemkv_title: 4, reason: play-all (1:28:27) }
+  - { makemkv_title: 14, reason: bonus (~3 min, 178s; filtered by minlength) }
+  - { makemkv_title: 16, reason: bonus (~3 min, 178s; filtered by minlength) }

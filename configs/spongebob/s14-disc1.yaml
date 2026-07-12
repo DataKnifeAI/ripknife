@@ -1,0 +1,58 @@
+kind: tv_disc
+meta:
+  id: spongebob-s14-disc1
+  show: SpongeBob SquarePants
+  season: 14
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 14
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 695.561533
+      outputs:
+        - { episode: "01", title: Single Celled Defense }
+        - { episode: "02", title: Buff for Puff }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 661.861200
+      outputs:
+        - { episode: "03", title: We Heart Hoops }
+        - { episode: "04", title: SpongeChovy }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 661.694367
+      outputs:
+        - { episode: "05", title: BassWard }
+        - { episode: "06", title: Squidiot Box }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 661.994667
+      outputs:
+        - { episode: "07", title: Blood is Thicker Than Grease }
+        - { episode: "08", title: Don't Make Me Laugh }
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 661.661000
+      outputs:
+        - { episode: "09", title: Momageddon }
+        - { episode: "10", title: Pet the Rock }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 657.323333
+      outputs:
+        - { episode: "11", title: Tango Tangle }
+        - { episode: "12", title: Necro-Nom-Nom-Nom-I-Con }
+skips: []

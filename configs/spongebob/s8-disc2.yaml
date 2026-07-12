@@ -1,0 +1,32 @@
+kind: tv_disc
+meta:
+  id: spongebob-s8-disc2
+  show: SpongeBob SquarePants
+  season: 8
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 8
+  log_file: logs/rip-s8-disc2.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - { slot: 1, makemkv_title: 1, episode: "12", title: A SquarePants Family Vacation }
+  - { slot: 2, makemkv_title: 2, episode: "13", title: Patrick's Staycation }
+  - { slot: 3, makemkv_title: 3, episode: "14", title: Walking the Plankton }
+  - { slot: 4, makemkv_title: 4, episode: "15", title: Mooncation }
+  - { slot: 5, makemkv_title: 5, episode: "16", title: Mr. Krabs Takes a Vacation }
+  - { slot: 6, makemkv_title: 6, episode: "17", title: Ghoul Fools }
+  - { slot: 7, makemkv_title: 7, episode: "18", title: Mermaid Man Begins }
+  - { slot: 8, makemkv_title: 8, episode: "19", title: Plankton's Good Eye }
+  - { slot: 9, makemkv_title: 9, episode: "20", title: Barnacle Face }
+  - { slot: 10, makemkv_title: 10, episode: "21", title: Pet Sitter Pat }
+  - { slot: 11, makemkv_title: 11, episode: "22", title: "House Sittin' for Sandy" }
+  - { slot: 12, makemkv_title: 13, episode: "23", title: Smoothe Jazz at Bikini Bottom }
+skips:
+  - { makemkv_title: 0, reason: play-all }
+  - { makemkv_title: 12, reason: bonus }

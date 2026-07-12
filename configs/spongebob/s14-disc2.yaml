@@ -1,0 +1,49 @@
+kind: tv_disc
+meta:
+  id: spongebob-s14-disc2
+  show: SpongeBob SquarePants
+  season: 14
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 14
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 706.572533
+      outputs:
+        - { episode: "13", title: PL-1413 }
+        - { episode: "14", title: In the Mood to Feud }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 661.994667
+      outputs:
+        - { episode: "15", title: Mooned! }
+        - { episode: "16", title: Hysterical History }
+  - slot: 3
+    makemkv_title: 2
+    episode: "17"
+    title: Kreepaway Kamp
+  - slot: 4
+    makemkv_title: 3
+    episode: "18"
+    title: Snow Yellow
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 654.020033
+      outputs:
+        - { episode: "19", title: The Dirty Bubble Bass }
+        - { episode: "20", title: Sheldon SquarePants }
+  - slot: 6
+    makemkv_title: 5
+    episode: "21"
+    title: "Sandy's Country Christmas"
+skips: []

@@ -1,0 +1,23 @@
+kind: movie
+meta:
+  id: scarface-1983
+  title: Scarface (1983)
+  device: dev:/dev/sr0
+  minlength: 300
+  disc_pattern: Scarface
+output:
+  dir: Movies
+  filename: Scarface (1983).mkv
+nas:
+  movies: true
+  share: /mnt/tn-sas/Movies
+post:
+  eject: true
+  copy_to_nas: true
+title_selection:
+  mode: auto_feature
+  min_duration_sec: 4800
+  min_size_bytes: 5368709120
+validation:
+  min_duration_sec: 4800
+  min_size_bytes: 5368709120

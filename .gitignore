@@ -1,0 +1,39 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Local runtime
+logs/
+output/
+.tmp/
+
+# Staging workspace (queue skeleton only; no rips or scan artifacts)
+/staging/**
+!/staging/pending/
+!/staging/ready/
+!/staging/done/
+!/staging/failed/
+/staging/pending/**
+!/staging/pending/.gitkeep
+/staging/ready/**
+!/staging/ready/.gitkeep
+/staging/done/**
+!/staging/done/.gitkeep
+/staging/failed/**
+!/staging/failed/.gitkeep
+
+# Secrets
+.env
+.env.*
+*credentials*
+
+# Editor
+.idea/
+.vscode/

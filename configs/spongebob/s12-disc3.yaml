@@ -1,0 +1,71 @@
+kind: tv_disc
+meta:
+  id: spongebob-s12-disc3
+  show: SpongeBob SquarePants
+  season: 12
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 12
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 704.503800
+      outputs:
+        - { episode: "34", title: "Knock Knock, Who's There?" }
+        - { episode: "35", title: "Pat Hearts Squid" }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 654.086767
+      outputs:
+        - { episode: "36", title: "Lighthouse Louie" }
+        - { episode: "37", title: "Hiccup Plague" }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 651.083767
+      outputs:
+        - { episode: "38", title: "A Cabin in the Kelp" }
+        - { episode: "39", title: "The Hankering" }
+  - slot: 4
+    makemkv_title: 3
+    episode: "40"
+    title: "Who R Zoo?"
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 660.092767
+      outputs:
+        - { episode: "41", title: "Kwarantined Krab" }
+        - { episode: "42", title: "Plankton's Intern" }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 655.087767
+      outputs:
+        - { episode: "43", title: "Patrick's Tantrum" }
+        - { episode: "44", title: "Bubble Bass's Tab" }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 655.087767
+      outputs:
+        - { episode: "45", title: "Kooky Cooks" }
+        - { episode: "46", title: "Escape from Beneath Glove World" }
+  - slot: 8
+    makemkv_title: 7
+    split:
+      at_seconds: 846.512333
+      outputs:
+        - { episode: "47", title: "Krusty Koncessionaires" }
+        - { episode: "48", title: "Dream Hoppers" }
+skips:
+  - { makemkv_title: 8, reason: play-all (2:50:28) }
+  - { makemkv_title: 9, reason: bonus (~22 min, MSG 15) }

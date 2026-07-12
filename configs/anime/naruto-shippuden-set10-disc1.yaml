@@ -1,0 +1,48 @@
+kind: tv_disc
+meta:
+  id: naruto-shippuden-set10-disc1
+  show: Naruto Shippuden
+  season: 12  # Blu-ray Set 10 Disc 1 → Plex Season 12 (episodes 249–255)
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Naruto Shippuden/Season 12
+nas:
+  share: /mnt/tn-sas/Anime/Naruto Shippuden
+  subdir: Season 12
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: jpn
+  subtitle_default: eng
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    episode: "249"
+    title: Thank You
+  - slot: 2
+    makemkv_title: 1
+    episode: "250"
+    title: Battle in Paradise! Odd Beast vs. The Monster!
+  - slot: 3
+    makemkv_title: 2
+    episode: "251"
+    title: The Man Named Kisame
+  - slot: 4
+    makemkv_title: 3
+    episode: "252"
+    title: The Angelic Herald of Death
+  - slot: 5
+    makemkv_title: 4
+    episode: "253"
+    title: The Bridge to Peace
+  - slot: 6
+    makemkv_title: 5
+    episode: "254"
+    title: The Super Secret S-Rank Mission
+  - slot: 7
+    makemkv_title: 6
+    episode: "255"
+    title: The Artist Returns

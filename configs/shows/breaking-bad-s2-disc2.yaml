@@ -1,0 +1,38 @@
+kind: tv_disc
+meta:
+  id: breaking-bad-s2-disc2
+  show: Breaking Bad
+  season: 2
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Breaking Bad/Season 2
+nas:
+  share: /mnt/tn-sas/Shows/Breaking Bad
+  subdir: Season 2
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+  # subtitle_default omitted → clear/disable default subtitle disposition
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    episode: "06"
+    title: Peekaboo
+  - slot: 2
+    makemkv_title: 1
+    episode: "07"
+    title: Negro y Azul
+  - slot: 3
+    makemkv_title: 2
+    episode: "08"
+    title: Better Call Saul
+  - slot: 4
+    makemkv_title: 3
+    episode: "09"
+    title: 4 Days Out
+skips:
+  - { makemkv_title: 4, reason: extra (~13:05) }

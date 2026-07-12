@@ -1,0 +1,80 @@
+kind: tv_disc
+meta:
+  id: spongebob-s12-disc1
+  show: SpongeBob SquarePants
+  season: 12
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 12
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 707.506800
+      outputs:
+        - { episode: "01", title: FarmerBob }
+        - { episode: "02", title: "Gary & Spot" }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 660.159500
+      outputs:
+        - { episode: "03", title: The Nitwitting }
+        - { episode: "04", title: The Ballad of Filthy Muck }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 651.083767
+      outputs:
+        - { episode: "05", title: The Krusty Slammer }
+        - { episode: "06", title: Pineapple RV }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 656.088767
+      outputs:
+        - { episode: "07", title: "Gary's Got Legs" }
+        - { episode: "08", title: King Plankton }
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 661.027033
+      outputs:
+        - { episode: "09", title: "Plankton's Old Chum" }
+        - { episode: "10", title: Stormy Weather }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 944.710433
+      outputs:
+        - { episode: "11", title: Swamp Mates }
+        - { episode: "12", title: One Trick Sponge }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 659.091767
+      outputs:
+        - { episode: "13", title: The Krusty Bucket }
+        - { episode: "14", title: "Squid's on a Bus" }
+  - slot: 8
+    makemkv_title: 7
+    split:
+      at_seconds: 653.085767
+      outputs:
+        - { episode: "15", title: "Sandy's Nutty Nieces" }
+        - { episode: "16", title: Insecurity Guards }
+  - slot: 9
+    makemkv_title: 8
+    split:
+      at_seconds: 652.401750
+      outputs:
+        - { episode: "17", title: Broken Alarm }
+        - { episode: "18", title: "Karen's Baby" }
+skips:
+  - { makemkv_title: 9, reason: play-all (3:24:32) }

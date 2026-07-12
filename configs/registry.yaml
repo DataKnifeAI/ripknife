@@ -1,0 +1,41 @@
+# Disc registry — maps MakeMKV disc_name values to known manifests.
+# Process 1 uses this to skip LLM mapping; Process 2 verifies before rip.
+#
+# match entries: exact strings (case-insensitive), substrings, or regex patterns.
+
+entries:
+  - id: breaking-bad-s1-disc1
+    manifest: configs/shows/breaking-bad-s1-disc1.yaml
+    match:
+      - "Breaking Bad: Season 1: Disc 1"
+      - "(?i)breaking bad.*season 1.*disc 1"
+
+  - id: breaking-bad-s1-disc2
+    manifest: configs/shows/breaking-bad-s1-disc2.yaml
+    match:
+      - "Breaking Bad: Season 1: Disc 2"
+      - "(?i)breaking bad.*season 1.*disc 2"
+
+  - id: breaking-bad-s2-disc1
+    manifest: configs/shows/breaking-bad-s2-disc1.yaml
+    match:
+      - "Breaking Bad: Season 2: Disc 1"
+      - "(?i)breaking bad.*season 2.*disc 1"
+
+  - id: naruto-shippuden-set10-disc1
+    manifest: configs/anime/naruto-shippuden-set10-disc1.yaml
+    match:
+      - "(?i)naruto shippuden.*249"
+      - "(?i)naruto shippuden.*255"
+
+  - id: naruto-shippuden-set10-disc2
+    manifest: configs/anime/naruto-shippuden-set10-disc2.yaml
+    match:
+      - "Naruto Shippuden 256 - 262"
+      - "(?i)naruto shippuden.*256.*262"
+
+  - id: naruto-shippuden-set10-disc3
+    manifest: configs/anime/naruto-shippuden-set10-disc3.yaml
+    match:
+      - "Naruto Shippuden 263 - 269"
+      - "(?i)naruto shippuden.*263.*269"

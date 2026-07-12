@@ -1,0 +1,42 @@
+kind: tv_disc
+meta:
+  id: breaking-bad-s2-disc1
+  show: Breaking Bad
+  season: 2
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Breaking Bad/Season 2
+nas:
+  share: /mnt/tn-sas/Shows/Breaking Bad
+  subdir: Season 2
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+  # subtitle_default omitted → clear/disable default subtitle disposition
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    episode: "01"
+    title: Seven Thirty-Seven
+  - slot: 2
+    makemkv_title: 1
+    episode: "02"
+    title: Grilled
+  - slot: 3
+    makemkv_title: 2
+    episode: "03"
+    title: Bit by a Dead Bee
+  - slot: 4
+    makemkv_title: 3
+    episode: "04"
+    title: Down
+  - slot: 5
+    makemkv_title: 4
+    episode: "05"
+    title: Breakage
+skips:
+  - { makemkv_title: 5, reason: extra (~15:48) }

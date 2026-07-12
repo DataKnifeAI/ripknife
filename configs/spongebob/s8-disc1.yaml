@@ -1,0 +1,31 @@
+kind: tv_disc
+meta:
+  id: spongebob-s8-disc1
+  show: SpongeBob SquarePants
+  season: 8
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 8
+  log_file: logs/rip-s8-disc1.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - { slot: 1, makemkv_title: 1, episode: "01", title: Accidents Will Happen }
+  - { slot: 2, makemkv_title: 2, episode: "02", title: The Other Patty }
+  - { slot: 3, makemkv_title: 3, episode: "03", title: Drive Thru }
+  - { slot: 4, makemkv_title: 4, episode: "04", title: The Hot Shot }
+  - { slot: 5, makemkv_title: 5, episode: "05", title: A Friendly Game }
+  - { slot: 6, makemkv_title: 6, episode: "06", title: Sentimental Sponge }
+  - { slot: 7, makemkv_title: 7, episode: "07", title: Frozen Face-Off }
+  - { slot: 8, makemkv_title: 8, episode: "08", title: Squidward's School for Grown-Ups }
+  - { slot: 9, makemkv_title: 9, episode: "09", title: Oral Report }
+  - { slot: 10, makemkv_title: 10, episode: "10", title: Sweet and Sour Squid }
+  - { slot: 11, makemkv_title: 11, episode: "11", title: The Googly Artiste }
+skips:
+  - { makemkv_title: 0, reason: play-all (~2:39) }
+  - { makemkv_title: 12, reason: bonus (~5 min) }

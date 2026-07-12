@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Thin launcher for the VideosRipper Python CLI
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+VENV_PY="${ROOT}/.venv/bin/python"
+if [[ ! -x "$VENV_PY" ]]; then
+  echo "VideosRipper venv missing at ${ROOT}/.venv — run: python -m venv .venv && pip install -e ." >&2
+  exit 1
+fi
+exec "$VENV_PY" -m videosripper.cli "$@"

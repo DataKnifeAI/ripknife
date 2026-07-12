@@ -1,0 +1,25 @@
+kind: movie
+meta:
+  id: ghost-rider-spirit-of-vengeance
+  title: Ghost Rider Spirit of Vengeance (2011)
+  device: dev:/dev/sr0
+  minlength: 300
+  disc_pattern: GHOST_RIDER
+output:
+  dir: Movies
+  filename: Ghost Rider Spirit of Vengeance (2011).mkv
+  log_file: logs/rip-ghost-rider-2.log
+nas:
+  movies: true
+  share: /mnt/tn-sas/Movies
+
+post:
+  eject: true
+  copy_to_nas: true
+title_selection:
+  mode: auto_feature
+  min_duration_sec: 4800
+  min_size_bytes: 5368709120
+validation:
+  min_duration_sec: 4800
+  min_size_bytes: 5368709120

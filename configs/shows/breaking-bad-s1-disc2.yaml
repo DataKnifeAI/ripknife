@@ -1,0 +1,32 @@
+kind: tv_disc
+meta:
+  id: breaking-bad-s1-disc2
+  show: Breaking Bad
+  season: 1
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Breaking Bad/Season 1
+nas:
+  share: /mnt/tn-sas/Shows/Breaking Bad
+  subdir: Season 1
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+  # subtitle_default omitted → clear/disable default subtitle disposition
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    episode: "05"
+    title: Gray Matter
+  - slot: 2
+    makemkv_title: 1
+    episode: "06"
+    title: Crazy Handful of Nothin'
+  - slot: 3
+    makemkv_title: 2
+    episode: "07"
+    title: A No-Rough-Stuff-Type Deal

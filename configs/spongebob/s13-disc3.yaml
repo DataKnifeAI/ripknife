@@ -1,0 +1,67 @@
+kind: tv_disc
+meta:
+  id: spongebob-s13-disc3
+  show: SpongeBob SquarePants
+  season: 13
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 13
+  log_file: logs/rip-s13-disc3.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 690.523167
+      outputs:
+        - { episode: "29", title: "Arbor Day Disarray" }
+        - { episode: "30", title: "Ain't That the Tooth" }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 656.322333
+      outputs:
+        - { episode: "31", title: "Ma and Pa's Big Hurrah" }
+        - { episode: "32", title: "Yellow Pavement" }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 657.657000
+      outputs:
+        - { episode: "33", title: "The Flower Plot" }
+        - { episode: "34", title: "SpongeBob on Parade" }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 661.327333
+      outputs:
+        - { episode: "35", title: "Delivery to Monster Island" }
+        - { episode: "36", title: "Ride Patrick Ride" }
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 661.160500
+      outputs:
+        - { episode: "37", title: "Hot Crossed Nuts" }
+        - { episode: "38", title: "Sir Urchin and Snail Fail" }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 657.323333
+      outputs:
+        - { episode: "39", title: Friendiversary }
+        - { episode: "40", title: "Mandatory Music" }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 885.084200
+      outputs:
+        - { episode: "41", title: "Dopey Dick" }
+        - { episode: "42", title: "Plankton and the Beanstalk" }
+skips: []

@@ -1,0 +1,70 @@
+kind: tv_disc
+meta:
+  id: spongebob-s9-disc3
+  show: SpongeBob SquarePants
+  season: 9
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 9
+  log_file: logs/rip-s9-disc3.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 706.405700
+      outputs:
+        - { episode: "27", title: Sanctuary! }
+        - { episode: "28", title: "What's Eating Patrick?" }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 652.618633
+      outputs:
+        - { episode: "29", title: "Patrick! The Game" }
+        - { episode: "30", title: The Sewers of Bikini Bottom }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 657.623633
+      outputs:
+        - { episode: "31", title: SpongeBob LongPants }
+        - { episode: "32", title: "Larry's Gym" }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 652.652000
+      outputs:
+        - { episode: "33", title: The Fish Bowl }
+        - { episode: "34", title: Married to Money }
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 660.626633
+      outputs:
+        - { episode: "35", title: Mall Girl Pearl }
+        - { episode: "36", title: Two Thumbs Down }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 653.853200
+      outputs:
+        - { episode: "37", title: Sharks vs. Pods }
+        - { episode: "38", title: CopyBob DittoPants }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 651.617633
+      outputs:
+        - { episode: "39", title: Sold! }
+        - { episode: "40", title: Lame and Fortune }
+skips:
+  - { makemkv_title: 7, reason: play-all (2:33:31) }
+  - { makemkv_title: 14, reason: bonus (~5 min, 298s; filtered by minlength) }
+  - { makemkv_title: 16, reason: bonus (~5 min, 298s; filtered by minlength) }

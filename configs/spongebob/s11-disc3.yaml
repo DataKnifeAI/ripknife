@@ -1,0 +1,73 @@
+kind: tv_disc
+meta:
+  id: spongebob-s11-disc3
+  show: SpongeBob SquarePants
+  season: 11
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 11
+  log_file: logs/rip-s11-disc3.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 710.826783
+      outputs:
+        - { episode: "36", title: Patnocchio }
+        - { episode: "37", title: ChefBob }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 653.436117
+      outputs:
+        - { episode: "38", title: Plankton Paranoia }
+        - { episode: "39", title: Library Cards }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 658.441117
+      outputs:
+        - { episode: "40", title: Call the Cops }
+        - { episode: "41", title: "Surf N' Turf" }
+  - slot: 4
+    makemkv_title: 3
+    episode: "42"
+    title: Goons on the Moon
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 660.443117
+      outputs:
+        - { episode: "43", title: Appointment TV }
+        - { episode: "44", title: "Karen's Virus" }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 654.120133
+      outputs:
+        - { episode: "45", title: The Grill is Gone }
+        - { episode: "46", title: The Night Patty }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 651.434117
+      outputs:
+        - { episode: "47", title: Bubbletown }
+        - { episode: "48", title: "Girls' Night Out" }
+  - slot: 8
+    makemkv_title: 7
+    split:
+      at_seconds: 970.002367
+      outputs:
+        - { episode: "49", title: Squirrel Jelly }
+        - { episode: "50", title: The String }
+skips:
+  - { makemkv_title: 8, reason: play-all (2:55:24) }
+  - { makemkv_title: 9, reason: bonus (~6:05, 365s) }

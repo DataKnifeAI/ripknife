@@ -1,0 +1,30 @@
+kind: tv_disc
+meta:
+  id: spongebob-s8-disc4
+  show: SpongeBob SquarePants
+  season: 8
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 8
+  log_file: logs/rip-s8-disc4.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - { slot: 1, makemkv_title: 1, episode: "38", title: Squiditis }
+  - { slot: 2, makemkv_title: 2, episode: "39", title: Demolition Doofus }
+  - { slot: 3, makemkv_title: 3, episode: "40", title: Treats! }
+  - { slot: 4, makemkv_title: 4, episode: "41", title: For Here or to Go }
+  - { slot: 5, makemkv_title: 5, episode: "42", title: "It's a SpongeBob Christmas!" }
+  - { slot: 6, makemkv_title: 6, episode: "43", title: Super Evil Aquatic Villain Team Up is Go! }
+  - { slot: 7, makemkv_title: 7, episode: "44", title: Chum Fricassee }
+  - { slot: 8, makemkv_title: 8, episode: "45", title: The Good Krabby Name }
+  - { slot: 9, makemkv_title: 9, episode: "46", title: Move It or Lose It }
+  - { slot: 10, makemkv_title: 10, episode: "47", title: Hello Bikini Bottom! }
+skips:
+  - { makemkv_title: 0, reason: play-all (2:19:06) }
+  - { makemkv_title: 11, reason: bonus (~5 min) }

@@ -1,0 +1,67 @@
+kind: tv_disc
+meta:
+  id: spongebob-s13-disc2
+  show: SpongeBob SquarePants
+  season: 13
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 13
+  log_file: logs/rip-s13-disc2.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 690.356333
+      outputs:
+        - { episode: "14", title: "Food PBFFT! Truck" }
+        - { episode: "15", title: "Upturn Girls" }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 662.161500
+      outputs:
+        - { episode: "16", title: "Say Awww!" }
+        - { episode: "17", title: "Patrick the Mailman" }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 655.321333
+      outputs:
+        - { episode: "18", title: "Captain Pipsqueak" }
+        - { episode: "19", title: "Plane to Sea" }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 849.348500
+      outputs:
+        - { episode: "20", title: Squidferatu }
+        - { episode: "21", title: "Slappy Daze" }
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 645.344700
+      outputs:
+        - { episode: "22", title: "Welcome to Binary Bottom" }
+        - { episode: "23", title: "You're Going to Pay...Phone" }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 660.026033
+      outputs:
+        - { episode: "24", title: "A Skin Wrinkle in Time" }
+        - { episode: "25", title: "Abandon Twits" }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 646.312333
+      outputs:
+        - { episode: "26", title: Wallhalla }
+        - { episode: "27", title: "Salty Sponge" }
+skips: []

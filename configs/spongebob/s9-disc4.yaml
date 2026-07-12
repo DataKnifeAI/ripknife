@@ -1,0 +1,54 @@
+kind: tv_disc
+meta:
+  id: spongebob-s9-disc4
+  show: SpongeBob SquarePants
+  season: 9
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 9
+  log_file: logs/rip-s9-disc4.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    episode: "41"
+    title: "Goodbye, Krabby Patty?"
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 658.691367
+      outputs:
+        - { episode: "42", title: "Sandy's Nutmare" }
+        - { episode: "43", title: Bulletin Board }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 659.191867
+      outputs:
+        - { episode: "44", title: Food Con Castaways }
+        - { episode: "45", title: Snail Mail }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 658.991667
+      outputs:
+        - { episode: "46", title: Pineapple Invasion }
+        - { episode: "47", title: Salsa Imbecilicus }
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 658.441117
+      outputs:
+        - { episode: "48", title: Mutiny on the Krusty }
+        - { episode: "49", title: The Whole Tooth }
+skips:
+  - { makemkv_title: 5, reason: play-all (1:50:21) }
+  - { makemkv_title: 6, reason: bonus Krabby Patty shorts (~6:37, 5 chapters) }
+  - { makemkv_title: 14, reason: bonus (~3:35, 215s; filtered by minlength) }
+  - { makemkv_title: 16, reason: bonus (~3:35, 215s; filtered by minlength) }

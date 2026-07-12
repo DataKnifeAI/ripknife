@@ -1,0 +1,64 @@
+kind: tv_disc
+meta:
+  id: spongebob-s13-disc1
+  show: SpongeBob SquarePants
+  season: 13
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 13
+  log_file: logs/rip-s13-disc1.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 686.352333
+      outputs:
+        - { episode: "01", title: A Place for Pets }
+        - { episode: "02", title: Lockdown for Love }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 645.511533
+      outputs:
+        - { episode: "03", title: Under the Small Top }
+        - { episode: "04", title: "Squidward's Sick Daze" }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 658.324333
+      outputs:
+        - { episode: "05", title: Goofy Scoopers }
+        - { episode: "06", title: Pat the Dog }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 646.979667
+      outputs:
+        - { episode: "07", title: Something Narwhal This Way Comes }
+        - { episode: "08", title: C.H.U.M.S }
+  - slot: 5
+    makemkv_title: 4
+    episode: "09"
+    title: "SpongeBob's Road to Christmas"
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 647.813833
+      outputs:
+        - { episode: "10", title: Potato Puff }
+        - { episode: "11", title: There Will Be Grease }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 652.518533
+      outputs:
+        - { episode: "12", title: The Big Bad Bubble Bass }
+        - { episode: "13", title: Sea-Man Sponge Haters Club }
+skips: []

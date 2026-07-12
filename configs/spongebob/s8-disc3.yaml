@@ -1,0 +1,78 @@
+kind: tv_disc
+meta:
+  id: spongebob-s8-disc3
+  show: SpongeBob SquarePants
+  season: 8
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 8
+  log_file: logs/rip-s8-disc3.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 1
+    episode: "24"
+    title: Bubble Troubles
+  - slot: 2
+    makemkv_title: 2
+    episode: "25"
+    title: The Way of the Sponge
+  - slot: 3
+    makemkv_title: 3
+    episode: "26"
+    title: The Krabby Patty That Ate Bikini Bottom
+  - slot: 4
+    makemkv_title: 4
+    episode: "27"
+    title: Bubble Buddy Returns
+  - slot: 5
+    makemkv_title: 5
+    episode: "28"
+    title: Restraining SpongeBob
+  - slot: 6
+    makemkv_title: 6
+    episode: "29"
+    title: Fiasco!
+  - slot: 7
+    makemkv_title: 7
+    episode: "30"
+    title: "Are You Happy Now?"
+  - slot: 8
+    makemkv_title: 8
+    episode: "31"
+    title: Planet of the Jellyfish
+  - slot: 9
+    makemkv_title: 9
+    episode: "32"
+    title: Free Samples
+  - slot: 10
+    makemkv_title: 10
+    episode: "33"
+    title: Home Sweet Rubble
+  - slot: 11
+    makemkv_title: 11
+    episode: "34"
+    title: Karen 2.0
+  - slot: 12
+    makemkv_title: 13
+    episode: "35"
+    title: InSPONGEiac
+  - slot: 13
+    makemkv_title: 14
+    episode: "36"
+    title: Face Freeze!
+  - slot: 14
+    makemkv_title: 15
+    episode: "37"
+    title: Glove World R.I.P.
+skips:
+  - makemkv_title: 0
+    reason: play-all (2:39:40)
+  - makemkv_title: 12
+    reason: bonus (~5 min)

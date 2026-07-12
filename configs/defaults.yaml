@@ -1,0 +1,37 @@
+# Default VideosRipper settings (reference; manifests override per-disc)
+meta:
+  device: dev:/dev/sr0
+  minlength: 300
+
+paths:
+  root: /mnt/game1/VideosRipper
+  output: output
+  staging: staging
+  logs: logs
+  nas_tv: /mnt/tn-sas/Anime/Spongebob Squarepants
+  nas_shows: /mnt/tn-sas/Shows
+  nas_movies: /mnt/tn-sas/Movies
+
+naming:
+  show: SpongeBob SquarePants
+  pattern: "{show} - {season}x{episode} - {title}.mkv"
+
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants  # tv_disc default when omitted/null (paths.NAS_SHARE)
+  shows_share: /mnt/tn-sas/Shows                  # TV Shows share (paths.SHOWS_NAS); set nas.share per show
+  movies_share: /mnt/tn-sas/Movies                # movie default when nas.movies and share omitted (paths.MOVIES_NAS)
+
+post:
+  eject: true                    # eject after successful real rip only; never scan/dry-run/validate
+  copy_to_nas: true              # copy finished files to NAS after rip
+
+monitor:
+  stall_timeout_sec: 900         # no PRGV/file growth during title rip (override via env)
+  open_timeout_sec: 600          # disc open / preflight makemkv info timeout
+  on_stall: exit                 # exit (kill makemkv) or warn
+
+retry:
+  count: 3                       # retries after first failure (3 = 4 total attempts); then eject + user intervention
+  delay_sec: 30                  # seconds to wait before retry (no eject between retries)
+  stall_retry: true              # retry same title after stall timeout (uses count)
+  nas_retries: 1                 # extra rsync attempts; then ALERT and continue rip

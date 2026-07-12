@@ -1,0 +1,65 @@
+kind: tv_disc
+meta:
+  id: spongebob-s15-disc1
+  show: SpongeBob SquarePants
+  season: 15
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 15
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 699.231867
+      outputs:
+        - { episode: "01", title: Sammy Suckerfish }
+        - { episode: "02", title: Big League Bob }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 660.326333
+      outputs:
+        - { episode: "03", title: UpWard }
+        - { episode: "04", title: Unidentified Flailing Octopus }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 660.192867
+      outputs:
+        - { episode: "05", title: Bad Luck Bob }
+        - { episode: "06", title: The Sandman Cometh }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 656.155500
+      outputs:
+        - { episode: "07", title: Biscuit Ballyhoo }
+        - { episode: "08", title: Student Driver Survivor }
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 647.346700
+      outputs:
+        - { episode: "09", title: Wiener Takes All }
+        - { episode: "10", title: Stuck in an Elevator }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 647.647000
+      outputs:
+        - { episode: "11", title: Squidness Protection }
+        - { episode: "12", title: Dome Alone }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 660.026033
+      outputs:
+        - { episode: "13", title: Wary Gary }
+        - { episode: "14", title: Pinned }
+skips: []

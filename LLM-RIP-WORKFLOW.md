@@ -1,0 +1,1474 @@
+# VideosRipper — LLM Workflow Instructions
+
+Instructions for an LLM assisting with DVD ripping on this machine. Read this file before starting any rip task.
+
+## Goal
+
+Rip SpongeBob SquarePants DVDs losslessly with MakeMKV, rename files for Plex, copy each episode to the NAS library, and optionally eject the disc when finished (`post.eject: true` in the manifest).
+
+**Workflow:** Config-driven **Python CLI** + YAML manifests under `configs/`. See [Primary workflow](#primary-workflow-python-cli--yaml). Legacy bash scripts are archived in `scripts/archive/` for reference only.
+
+## Host environment
+
+| Item | Value |
+|------|-------|
+| OS | CachyOS / Arch Linux |
+| MakeMKV | 1.18.4 official install in `~/.local/` (not AUR) |
+| CLI | `~/.local/bin/makemkvcon` |
+| Key | `~/.MakeMKV/settings.conf` (`app_Key`, mode 600) |
+| Library path | Source `~/.config/environment.d/makemkv.conf` before running makemkv |
+| Optical drive | Pioneer BD-XD07 USB → `/dev/sr0` |
+| Drive group | User must be in `optical` group; kernel modules: `sg`, `sr_mod`, `usb_storage` |
+
+## Directory layout (all on game drive)
+
+```
+/mnt/game1/VideosRipper/
+  README.md                 ← project overview
+  LLM-RIP-WORKFLOW.md       ← this file (LLM-assisted ripping)
+  pyproject.toml            ← Python package metadata
+  .venv/                    ← local venv (create on install; not in git)
+  videosripper/             ← Python package (cli.py, models, runner, …)
+  configs/                  ← YAML manifests (primary rip configs)
+    defaults.yaml           ← reference defaults
+    spongebob/s8-disc{1,2,3}.yaml
+    anime/naruto-shippuden-set10-disc*.yaml
+    shows/breaking-bad-s1-disc{1,2}.yaml, breaking-bad-s2-disc{1,2,3}.yaml, breaking-bad-s3-disc1.yaml
+    movies/ghost-rider-spirit-of-vengeance.yaml
+    movies/scarface-1983.yaml
+  scripts/
+    videosripper            ← launcher → .venv/bin/python -m videosripper.cli
+    videosripper-common.sh  ← shared bash (NAS rsync, staging, eject)
+    fix-*.sh, rename-*.sh   ← host/NAS helpers
+    examples/               ← episode title lists (reference when authoring YAML)
+    archive/                ← legacy per-disc bash scripts (20 files; reference only)
+  logs/                     ← running logs (append; rotate at 50k lines, keep .1–.3)
+    rip.log                 ← high-level rip status
+    debug.log               ← makemkv/ffprobe/subprocess detail
+    scan.log                ← scan summaries
+    error.log               ← ERROR/CRITICAL + exception tracebacks
+  output/                   ← final MKV files (e.g. output/Season 8/)
+  staging/                  ← temp dirs during each title rip (.rip.XXXXXX)
+```
+
+**Always use the game drive** for staging and output. Do not rip to `~/VideosRipper/output/` or `/tmp`.
+
+Override paths only via env vars (see [Environment variables](#environment-variables)).
+
+## NAS library
+
+| Path | Purpose |
+|------|---------|
+| `/mnt/tn-sas/Anime/Spongebob Squarepants/Season N/` | SpongeBob Plex library (Anime share) |
+| `/mnt/tn-sas/Anime/Naruto Shippuden/Season N/` | Naruto Shippuden Plex library (Anime share) |
+| `/mnt/tn-sas/Shows/<Show>/Season N/` | Live-action / non-anime TV (Shows share) |
+| `/mnt/tn-sas/Movies/` | Feature films (Movies share) |
+| Copy method | `rsync` via `copy_episode_to_share` / `copy_movie_to_share` in `scripts/videosripper-common.sh` |
+
+Ensure the destination folder is writable (`drwxrwxrwx` or equivalent) before copying.
+
+### NAS mounts (`/etc/fstab`)
+
+All **9** `nas.dataknife.net` NFS4 lines must use the **same** options:
+
+```
+rw,relatime,vers=4.2,async,nconnect=4,rsize=1048576,wsize=1048576,_netdev,soft,nofail,x-systemd.automount,x-systemd.idle-timeout=600
+```
+
+| Share | Mount point | Library use |
+|-------|-------------|-------------|
+| Anime, FAV, Shows, YouTube, Photos, Timelapse | `/mnt/tn-sas/...` | SpongeBob: `/mnt/tn-sas/Anime/Spongebob Squarepants` |
+| Movies | `/mnt/tn-sas/Movies` | Feature films |
+| Tools, Backup | `/mnt/tn-cold/...` | — |
+
+**`nconnect=4` on every line:** The Linux NFS client shares one RPC transport per server. The **first automount wins** — if any share still has `sync` without `nconnect=4`, later mounts inherit the slow single-connection path. All 9 lines must match, then **remount all shares** (or reboot).
+
+**`async` in fstab vs reality:** `async` is listed for consistency, but modern Linux NFS **ignores it for data integrity** — client writes are effectively synchronous. The measured speedup (~**200 MB/s** with `rsync`/`cp` vs old ~**12–29 MB/s**) comes mainly from **`nconnect=4`** and **`rsize`/`wsize=1048576`**, not from async.
+
+**Copy files with `rsync` or `cp`** for movie/episode transfers. Do not use `dd` for file copies.
+
+### Feature films (Blu-ray / BD-Java)
+
+- **BD-Java discs need a JRE** — MakeMKV warns `requires Java runtime (JRE), but none was found`. Install `jre-openjdk` (or `jre8-openjdk` if MakeMKV still misses it); verify with `java -version` and re-scan.
+- **Use the same `--minlength` for scan and rip** — e.g. `info -r --minlength=300` then `mkv -r --minlength=300`. A mismatched minlength renumbers titles (Ghost Rider: title 0 became a ~294 MB promo at minlength=120 instead of 00800.mpls theatrical ~24 GB).
+- **Verify before NAS copy** — `ffprobe` duration (reject feature rips &lt; ~80 min) and file size (reject &lt; ~5 GB for a typical BD feature). Do not rsync a bad rip to `/mnt/tn-sas/Movies/`.
+
+**After fstab changes:**
+
+```bash
+sudo bash /mnt/game1/VideosRipper/scripts/fix-nas-mounts.sh
+```
+
+- `--fstab-only` — update fstab only; reboot or run again without the flag to remount.
+- `--lazy` — if umount fails due to open files (breaks lazy-unmounted handles).
+- `--stop-verify` — kill `sha256sum` on Movies (common umount blocker) and skip the optional cp speed test.
+
+**Do not** run `sha256sum` verify on large (e.g. 32 GB) movie files over NFS while remounting — it holds the Movies mount busy. Stop verify jobs before remount, or use `--stop-verify`.
+
+Script verifies remount via mount options and `ss` to `nas.dataknife.net:2049` (expect multiple established connections when `nconnect=4` is active).
+
+## File naming
+
+```
+SpongeBob SquarePants - SxEE - Episode Title.mkv
+```
+
+- **All rips go in `Season N/`** on the game drive and NAS (e.g. `Season 3/`, `Season 6/`).
+- Use **TheTVDB DVD order** episode numbers (all `Nx##` within that season). Reference: [TheTVDB DVD order](https://thetvdb.com/series/spongebob-squarepants/seasons/dvd/).
+- Do **not** use aired-order numbers or wrong-season prefixes — breaks Plex when everything lives in one season folder.
+- **Plex:** set episode ordering to **DVD order** (Show → Edit → Advanced → Episode ordering).
+- Sanitize titles: no `?`, `/`, `:`, etc.
+- Fix S6 files after aired-order rips: `bash /mnt/game1/VideosRipper/scripts/rename-s6-dvd-order.sh`
+
+### Anime (Naruto Shippuden and similar)
+
+```
+Naruto Shippuden - 12x249 - Thank You.mkv
+```
+
+- **Show folder on NAS:** `/mnt/tn-sas/Anime/Naruto Shippuden/Season N/` (absolute episode numbers in filenames, e.g. `12x249` not aired-order).
+- **Local output:** use a show-specific path so seasons do not collide with other shows, e.g. `output/Naruto Shippuden/Season 12/`.
+- **YAML:** set `nas.share` to the show folder and `nas.subdir: Season N` when `output.season_dir` includes the show name (see [stream_defaults](#stream_defaults-anime-language-defaults)).
+- **Physical Blu-ray set number ≠ anime season.** Viz Media box sets are numbered independently of Plex/TheTVDB seasons — one physical set can span multiple anime seasons. Always check the NAS library (`ls "/mnt/tn-sas/Anime/Naruto Shippuden/Season N/"`) for the next missing episode numbers and set `meta.season` to that Plex season, not the box-set number. Example: **Blu-ray Set 10 Disc 1** contains episodes **249–255**, which belong in **Season 12** (NAS already has 12x243–12x248).
+- Match existing NAS spelling (`Naruto Shippuden` without macron in recent rips).
+- Sanitize titles: no `?`, `/`, `:`, etc. (existing library keeps `!` where present).
+
+## Primary workflow (Python CLI + YAML)
+
+**Use the config-driven Python CLI for all new rips.** Do not create new bash scripts under `scripts/` — author a YAML manifest under `configs/` instead. Legacy per-disc bash scripts were moved to `scripts/archive/` for reference only (see [Completed discs](#completed-discs-historical-reference)).
+
+### 0. One-time install
+
+```bash
+cd /mnt/game1/VideosRipper
+python -m venv .venv
+.venv/bin/pip install -e .
+chmod +x scripts/videosripper
+```
+
+Launcher: `scripts/videosripper` → `.venv/bin/python -m videosripper.cli`.
+
+### 1. Verify drive
+
+```bash
+ls -la /dev/sr0
+```
+
+If missing but USB drive is plugged in:
+
+```bash
+bash /mnt/game1/VideosRipper/scripts/fix-optical-drive.sh
+```
+
+User may need to enter sudo password. If still no `/dev/sr0`, ask user to unplug/replug, then rerun fix script.
+
+### 2. Scan the disc
+
+With a draft manifest (device + `minlength` set):
+
+```bash
+scripts/videosripper scan configs/spongebob/s8-disc4.yaml
+scripts/videosripper scan configs/spongebob/s8-disc4.yaml --json   # machine-readable
+```
+
+**Optional — preview a mapped title before ripping:**
+
+```bash
+# After scan, spot-check title 1 (skip ~60s FBI, sample 45s of content)
+scripts/videosripper preview --title 1 --config configs/spongebob/s8-disc4.yaml --offset 60 --seconds 45
+
+# Faster on DVDs: rip only chapter 2, then slice
+scripts/videosripper preview --title 1 --chapter 2 --offset 0 --seconds 45 --scan-json /path/to/scan.json
+
+# Keep sample MKV for manual viewing
+scripts/videosripper preview --title 1 --config configs/shows/breaking-bad-s3-disc1.yaml --keep
+```
+
+PASS/FAIL prints to console; details in `logs/debug.log`. Preview rips to `staging/.preview.*` (cleaned unless `--keep`). Full-title preview is slow on Blu-ray — prefer `--chapter` on DVDs or rely on scan validation when under time pressure.
+
+Or manually (same minlength as manifest):
+
+```bash
+source ~/.config/environment.d/makemkv.conf
+scripts/videosripper scan configs/spongebob/s8-disc4.yaml
+# summary → logs/scan.log ; full makemkv output → logs/debug.log
+```
+
+**Identify episode titles vs extras:**
+
+- Title 0 is often **Play All** (~2+ hours) — skip on most multi-episode discs.
+- ~11 min titles = single episodes.
+- ~20+ min with 2 chapters = two episodes merged on one title — use `split` in YAML (see [YAML manifest schema](#yaml-manifest-schema)).
+- <5 min after minlength filter = menus/trailers — add to `skips[]`.
+
+Confirm episode count with user (“next disc has N eps”).
+
+**Title validation (avoid wrong / copy-protected titles):**
+
+**Strategy: fast pre-rip / post-rip confirm** — keep the rip path quick; confirm outputs after each title rip instead of cycling through candidate titles.
+
+- **Pre-rip (fast):** One lightweight scan only. Reject obvious bad mappings: suspicious names (COPYRIGHT, FBI, WARNING, …), durations below `minlength`, short standalone episodes, obfuscation cluster/decoy checks, `disc_name` match. No title cycling, no blocking two-pass scan by default.
+- **Post-rip (confirm):** After each episode/track rip, `ffprobe` duration and file size are compared to the pre-rip scan for that `makemkv_title`. Tolerance: duration ±5% or ±30s (whichever is larger); size ±10% (proportional for chapter splits). On mismatch: log `ERROR`, delete the bad output, retry the slot (same `retry.count` as makemkv stalls), then stop for manual fix — **do not** auto-cycle to the next title index.
+- **Wrong title workflow:** post-rip fails → slot retries exhaust → re-run with `--start-at N` after fixing the manifest mapping (or pick the right title manually from `scan` Notes).
+- **Optional/slow:** Two-pass scan and MPLS parsing stay CLI-only flags; they never block the watcher rip path.
+
+- Use the **same `minlength` for scan and rip** — mismatched minlength renumbers titles (Ghost Rider: title 0 became a promo at minlength=120 instead of the ~24 GB feature).
+- **Reject suspicious titles** — names containing COPYRIGHT, FBI, WARNING, anti-piracy loops; durations below `minlength`; standalone episodes under ~8 min after the filter.
+- **Check later titles** — on some DVDs the first few indices are dummy protection loops or menus; the real episode may be at a **higher** makemkv index. When mapping, compare duration and size against neighbors; if title N looks wrong, inspect N+1, N+2, etc. (pre-rip hints only — post-rip verify catches wrong picks after rip).
+- **Title count explosion:** scan/disc-watcher log `WARNING` when >50 titles (obfuscated Blu-ray); no blocking.
+- **Validate before rip:** `scripts/videosripper validate configs/…yaml --with-scan` (or `--scan-json staging/pending/….scan.json`). `rip` and `rip-watcher` re-scan and refuse bad mappings.
+- **Pre-watch title slices (optional):** `scripts/videosripper preview --title N` rips a short sample, skips FBI/menu loops with `--offset 60`, and checks blackframe/silence heuristics. Use `--chapter 2` on DVDs to rip only chapter 2 (faster than full title). Off by default on `rip`; pass `--sample-verify` to run before each title. Does not replace scan validation or post-rip ffprobe checks.
+- **Scan hints:** `scan` / `scan-device` show a **Notes** column flagging suspicious titles and suggesting later alternatives.
+- **Movies:** use `title_selection.mode: auto_feature` or verify fixed index duration/size (Scarface: title 0 ~27 min promo, title 1 ~2:50 feature). Post-rip uses scan duration/size with the same tolerances plus manifest `validation` minimum floors.
+
+**Obfuscated Blu-ray playlists (duplicate / decoy titles):**
+
+Some Blu-rays expose hundreds of playlists with the **same name and duration** (playlist obfuscation). One or more **decoy** playlists may be slightly longer or shorter than the real feature.
+
+- **Detection:** scan JSON includes an `obfuscation` block when ≥5 titles share the dominant duration: `dominant_duration_sec`, `duplicate_count`, `decoy_indices`, `recommended_title` (lowest index in the largest cluster).
+- **John Wick Chapter 2 example:** 330 titles all named "John Wick Chapter 2"; 321 at 2:02:22 (7342 s); title **169** is a decoy at 2:04:08 (7448 s); short menu snippets at 148, 268, 324–329. Use `title_selection.mode: auto_feature` or `fixed` at title **0**; document decoys in `skips[]`.
+- **Mapping:** pick `recommended_title` from scan JSON (or lowest index in the dominant cluster). Add every `decoy_indices` entry to `skips[]` with reason like `decoy playlist (duration outlier)`.
+- **Validation:** `validate --scan-json` and `rip-watcher` reject fixed/auto titles outside the dominant cluster or on decoy indices.
+- **Scan table:** Notes column marks recommended feature and decoy outliers on obfuscated discs.
+
+### 3. Create or edit YAML manifest
+
+1. Map each makemkv title → **TheTVDB DVD order** `Nx##` + episode title ([TheTVDB DVD order](https://thetvdb.com/series/spongebob-squarepants/seasons/dvd/)).
+2. Add or update `configs/<show>/…yaml` (copy an existing disc manifest as a template).
+3. Optional title lists: `scripts/examples/*-episodes.txt`.
+4. Validate:
+
+```bash
+scripts/videosripper validate configs/spongebob/s8-disc4.yaml
+scripts/videosripper validate configs/spongebob/s8-disc4.yaml --with-scan
+```
+
+### 4. Dry-run rip plan
+
+```bash
+scripts/videosripper rip configs/spongebob/s8-disc4.yaml --dry-run
+```
+
+Review slot → makemkv title → output filename mapping before touching the drive.
+
+### 5. Run the rip
+
+```bash
+scripts/videosripper rip configs/spongebob/s8-disc4.yaml
+```
+
+Run in background for long jobs. Logs append to fixed files under `logs/` (rotate at 50,000 lines; keep `*.log.1`–`*.log.3`):
+
+| File | Use |
+|------|-----|
+| `logs/rip.log` | Monitor rip progress (`tail -f logs/rip.log`) |
+| `logs/debug.log` | Troubleshoot makemkv/ffprobe stalls (`tail -f logs/debug.log`) |
+| `logs/scan.log` | Scan title tables (`tail -f logs/scan.log`) |
+| `logs/error.log` | ERROR/ALERT + exception tracebacks only (`tail -f logs/error.log`) |
+
+Legacy per-disc logs (e.g. `logs/rip-s8-disc4.log`) are from older runs; ignore for new sessions.
+
+**Resume after failure** (episode slot N, not makemkv title index):
+
+```bash
+VIDEOSRIPPER_START_AT=5 scripts/videosripper rip configs/spongebob/s8-disc4.yaml
+# or
+scripts/videosripper rip configs/spongebob/s8-disc4.yaml --start-at 5
+```
+
+The ripper skips slots whose output file already exists under `output/`.
+
+**Full restart** (user deleted output folder):
+
+```bash
+pkill -f 'videosripper|makemkvcon mkv.*sr0' || true
+rm -rf /mnt/game1/VideosRipper/output/Season\ 8
+mkdir -p /mnt/game1/VideosRipper/output/Season\ 8 /mnt/game1/VideosRipper/logs
+scripts/videosripper rip configs/spongebob/s8-disc4.yaml
+```
+
+Never restart while makemkvcon is mid-rip without killing it first. **Do not** run two rips against `/dev/sr0` at once.
+
+### 6. Verify and NAS
+
+- Each TV episode ~600–700 MB, duration ~640–720 s (except specials/doubles).
+- Count matches expected episodes.
+- Files on NAS: `ls "/mnt/tn-sas/Anime/Spongebob Squarepants/Season 8/"`.
+- Disc ejects when `post.eject: true` (default) after a successful real rip — never on scan, validate, or `--dry-run`. Exhausted disc-open/stall retries also auto-eject for inspection (then exit non-zero).
+
+Movies: `ffprobe` duration and file size before trusting NAS copy (see [Feature films](#feature-films-blu-ray--bd-java)).
+
+## YAML manifest schema
+
+Manifests live under `configs/`. See `configs/defaults.yaml` for shared path defaults.
+
+### TV disc (`kind: tv_disc`)
+
+```yaml
+kind: tv_disc
+meta:
+  id: spongebob-s8-disc1          # unique id
+  show: SpongeBob SquarePants
+  season: 8
+  device: dev:/dev/sr0
+  minlength: 300                  # seconds; use same value for scan and rip
+output:
+  season_dir: Season 8            # under output/
+  # log_file: deprecated — rips append to logs/rip.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants  # omit or null → paths.NAS_SHARE (same default)
+post:
+  eject: true                     # default; eject after successful real rip only
+  copy_to_nas: true               # rsync to NAS after rip
+# optional — defaults match configs/defaults.yaml / env
+# retry:
+#   count: 3                      # 3 retries = 4 total attempts; then eject + user intervention
+#   delay_sec: 30                 # wait between retries (no mid-retry eject)
+#   stall_retry: true
+#   nas_retries: 1
+tracks:
+  - { slot: 1, makemkv_title: 1, episode: "01", title: Accidents Will Happen }
+  - { slot: 2, makemkv_title: 2, episode: "02", title: The Other Patty }
+  # non-contiguous makemkv indices OK (e.g. slot 12 → makemkv_title: 13)
+skips:
+  - { makemkv_title: 0, reason: play-all (~2:39) }
+  - { makemkv_title: 12, reason: bonus (~5 min) }
+```
+
+**`tracks[]`:** ordered episode slots (1-based `slot`). Each track rips one makemkv title unless `split` or `extract_chapter` is set. Optional `season:` overrides `meta.season` for output path and NAS subdir (cross-season discs).
+
+**`skips[]`:** documentation only — titles not ripped (play-all, extras).
+
+**Split** — two episodes from one title (S4 Disc 1 title 8 pattern):
+
+```yaml
+  - slot: 8
+    makemkv_title: 8
+    split:
+      at_seconds: 662.428433
+      outputs:
+        - { episode: "08", title: Selling Out }
+        - { episode: "09", title: Funny Pants }
+```
+
+**Extract chapter** — one episode from play-all (S3 Disc 1 title 30 ch15 pattern):
+
+```yaml
+  - slot: 15
+    makemkv_title: 30
+    episode: "15"
+    title: No Weenies Allowed
+    extract_chapter:
+      chapter_index: 14           # 0-based ffprobe chapter index
+```
+
+### stream_defaults (language defaults)
+
+Keep all audio and subtitle tracks in the MKV but set Plex/player defaults:
+
+```yaml
+# Anime (Japanese audio + English subs)
+stream_defaults:
+  keep_all_tracks: true          # MakeMKV app_DefaultSelectionString +sel:all
+  audio_default: jpn             # ffmpeg remux sets default audio disposition
+  subtitle_default: eng          # ffmpeg remux sets default subtitle disposition
+
+# Live-action TV (English audio, no default subtitle)
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+  # omit subtitle_default (or null) → clear/disable subtitle default disposition
+```
+
+- **`keep_all_tracks`:** temporarily sets `app_DefaultSelectionString` in `~/.MakeMKV/settings.conf` during each title rip (restored after).
+- **`audio_default` / `subtitle_default`:** post-rip ffmpeg copy remux adjusts MKV default flags only; no re-encode.
+- **Omit `subtitle_default`:** when `audio_default` is set and `subtitle_default` is omitted/null, remux clears all subtitle default dispositions (tracks kept, none marked default).
+- Anime discs may ship with English audio default — post-process flips default to Japanese while keeping English dubs/subs.
+- Examples: `configs/anime/naruto-shippuden-set10-disc1.yaml`, `configs/shows/breaking-bad-s1-disc1.yaml`.
+
+When local output includes the show name but NAS uses `Season N` only:
+
+```yaml
+output:
+  season_dir: Naruto Shippuden/Season 12
+nas:
+  share: /mnt/tn-sas/Anime/Naruto Shippuden
+  subdir: Season 12              # NAS dest = share/subdir (not output.season_dir)
+```
+
+### Movie (`kind: movie`)
+
+```yaml
+kind: movie
+meta:
+  id: ghost-rider-spirit-of-vengeance
+  title: Ghost Rider Spirit of Vengeance (2011)
+  device: dev:/dev/sr0
+  minlength: 300
+  disc_pattern: GHOST_RIDER       # optional scan hint
+output:
+  dir: Movies
+  filename: Ghost Rider Spirit of Vengeance (2011).mkv
+  # log_file: deprecated — rips append to logs/rip.log
+nas:
+  movies: true
+  share: /mnt/tn-sas/Movies       # omit or null → paths.MOVIES_NAS (same default)
+post:
+  eject: true
+  copy_to_nas: true
+title_selection:
+  mode: auto_feature              # pick longest feature title
+  min_duration_sec: 4800
+  min_size_bytes: 5368709120
+validation:
+  min_duration_sec: 4800
+  min_size_bytes: 5368709120
+```
+
+Existing manifests: `configs/spongebob/s8-disc{1,2,3}.yaml`, `configs/movies/ghost-rider-spirit-of-vengeance.yaml`, `configs/movies/scarface-1983.yaml`.
+
+## Environment variables
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `VIDEOSRIPPER_ROOT` | `/mnt/game1/VideosRipper` | Base path |
+| `VIDEOSRIPPER_OUTPUT` | `$ROOT/output` | Final MKV output |
+| `VIDEOSRIPPER_STAGING` | `$ROOT/staging` | Temp rip dirs |
+| `VIDEOSRIPPER_LOGS` | `$ROOT/logs` | Log files |
+| `VIDEOSRIPPER_NAS` | `/mnt/tn-sas/Anime/Spongebob Squarepants` | SpongeBob NAS base (Anime share) |
+| `VIDEOSRIPPER_SHOWS_NAS` | `/mnt/tn-sas/Shows` | Live-action TV Shows share root |
+| `VIDEOSRIPPER_MOVIES_NAS` | `/mnt/tn-sas/Movies` | Feature-film NAS destination |
+| `VIDEOSRIPPER_DEVICE` | `dev:/dev/sr0` | MakeMKV source (overrides manifest when set) |
+| `VIDEOSRIPPER_START_AT` | `1` | Resume TV rip from episode **slot** N |
+| `VIDEOSRIPPER_STALL_TIMEOUT_SEC` | `900` | No PRGV/file growth during title rip before stall alert (15 min) |
+| `VIDEOSRIPPER_OPEN_TIMEOUT_SEC` | `600` | Preflight disc-open timeout; stall limit before first PRGV (10 min) |
+| `VIDEOSRIPPER_ON_STALL` | `exit` | On stall: `exit` (kill makemkv) or `warn` (log only) |
+| `VIDEOSRIPPER_RETRY_COUNT` | `3` | Retries after first failure (**3 retries = 4 total attempts**) before user intervention |
+| `VIDEOSRIPPER_RETRY_DELAY_SEC` | `30` | Seconds to wait before retry (preflight / title rip / NAS); disc stays loaded |
+| `VIDEOSRIPPER_STALL_RETRY` | `true` | Retry same title after stall (uses retry count) |
+| `VIDEOSRIPPER_NAS_RETRIES` | `1` | Extra rsync attempts; on final fail log ALERT and continue rip |
+
+CLI: `--retry N`, `--retry-delay SEC`. Optional per-manifest `monitor:` / `retry:` blocks (see `configs/defaults.yaml`) override defaults when env/CLI unset.
+
+**Retry semantics:** `count` / `VIDEOSRIPPER_RETRY_COUNT` is the number of *retries after the first failure*, not total attempts. Default `3` → initial attempt + 3 retries = **4 tries** before giving up. After exhaustion on disc open / Failed to open disc / stall, VideosRipper logs `=== ALERT === USER INTERVENTION REQUIRED`, **auto-ejects** the disc (so you can clean/re-seat it), and exits non-zero. Re-insert and re-run (TV: `--start-at N`). The disc is **not** ejected between retries.
+
+## Completed discs (historical reference)
+
+These tables record episode↔makemkv title mappings from finished rips. **Legacy bash scripts** referenced by filename (e.g. `rip-s6-disc.sh`) live in [`scripts/archive/`](scripts/archive/) — see [`scripts/archive/README.md`](scripts/archive/README.md). **YAML manifests** exist for Season 8 discs 1–3 and Ghost Rider; resume those with `scripts/videosripper rip configs/…yaml`. For seasons without manifests, resume archived bash with `VIDEOSRIPPER_START_AT` (examples below).
+
+### Season 6
+
+### Vol 1 Disc 1 — `scripts/archive/rip-s6-disc.sh` (14 titles, makemkv 0–13)
+
+| Idx | File | Episode |
+|-----|------|---------|
+| 0 | 6x05 | Spongicus |
+| 1 | 6x06 | Suction Cup Symphony |
+| 2 | 6x01 | House Fancy |
+| 3 | 6x02 | Krabby Road |
+| 4 | 6x03 | Penny Foolish |
+| 5 | 6x04 | Nautical Novice |
+| 6 | 6x07 | Not Normal |
+| 7 | 6x08 | Gone |
+| 8 | 6x21 | SpongeBob SquarePants vs. The Big One (~22 min) |
+| 9 | 6x11 | A Life in a Day |
+| 10 | 6x12 | Sun Bleached |
+| 11 | 6x13 | Giant Squidward |
+| 12 | 6x14 | No Nose Knows |
+| 13 | 6x15 | Patty Caper |
+
+### Vol 1 Disc 2 — `scripts/archive/rip-s6-disc2.sh` (10 titles, makemkv 0–9)
+
+| Idx | File | Episode |
+|-----|------|---------|
+| 0 | 6x16 | Plankton's Regular |
+| 1 | 6x31 | To SquarePants or Not to SquarePants |
+| 2 | 6x30 | Squid's Visit |
+| 3 | 6x09 | The Splinter |
+| 4 | 6x10 | Slide Whistle Stooges |
+| 5 | 6x17 | Boating Buddies |
+| 6 | 6x18 | The Krabby Kronicle |
+| 7 | 6x19 | The Slumber Party |
+| 8 | 6x20 | Grooming Gary |
+| 9 | 6x44 | Truth or Square (~59 min) |
+
+### Vol 2 Disc 1 — `scripts/archive/rip-s6-disc3.sh` (12 titles, makemkv 1–12; skip 0 play-all) ✅ **Completed 2026-07-03**
+
+All 12 episodes ripped to `output/Season 6/` and copied to NAS. Log: `logs/rip-disc3.log`. Renamed to DVD order 2026-07-03.
+
+| Idx | File | Episode |
+|-----|------|---------|
+| 1 | 6x22 | Porous Pockets |
+| 2 | 6x23 | Choir Boys |
+| 3 | 6x24 | Krusty Krushers |
+| 4 | 6x25 | The Card |
+| 5 | 6x26 | Dear Vikings |
+| 6 | 6x27 | Ditchin' |
+| 7 | 6x45 | Pineapple Fever |
+| 8 | 6x46 | Chum Caverns |
+| 9 | 6x28 | Grandpappy the Pirate |
+| 10 | 6x29 | Cephalopod Lodge |
+| 11 | 6x32 | Shuffleboarding |
+| 12 | 6x33 | Professor Squidward |
+
+**Disc scan notes for Vol 2 Disc 1:**
+
+- Title 0 = Play All (2:20:15) — do not rip.
+- Title 13 = ~8 min extra — skip.
+- Title 12 ripped as **1188 s (~20 min)** single MKV — longer than a normal ep; verify content if needed.
+
+### Vol 2 Disc 2 — `scripts/archive/rip-s6-disc4.sh` (11 titles, makemkv 1–11; skip 0 play-all, 12–13 extras) ✅ **Completed 2026-07-03**
+
+All 11 episodes ripped to `output/Season 6/` and copied to NAS. Log: `logs/rip-disc4.log`.
+
+| Idx | File | Episode |
+|-----|------|---------|
+| 1 | 6x34 | Pet or Pests |
+| 2 | 6x35 | Komputer Overload |
+| 3 | 6x36 | Gullible Pants |
+| 4 | 6x37 | Overbooked |
+| 5 | 6x38 | No Hat for Pat |
+| 6 | 6x39 | Toy Store of Doom |
+| 7 | 6x47 | The Clash of Triton (~22 min) |
+| 8 | 6x40 | Sand Castles in the Sand |
+| 9 | 6x41 | Shell Shocked |
+| 10 | 6x42 | Chum Bucket Supreme |
+| 11 | 6x43 | Single Cell Anniversary (~19 min) |
+
+**Disc scan notes for Vol 2 Disc 2:**
+
+- Title 0 = Play All (2:20:01) — do not rip.
+- Title 7 = ~22 min — Clash of Triton TV movie.
+- Title 12 (~8 min) and title 13 (~5 min) — DVD shorts/extras — skip.
+
+**Big One vs Krusty Krushers:** both were briefly `6x21` under aired order; DVD order fixes this — Big One **6x21**, Krusty Krushers **6x24**.
+
+## Season 3 — Complete Third Season ✅ **All 3 discs ripped (37 files, 2026-07-04)**
+
+### Disc 1 — `scripts/archive/rip-s3-disc1.sh` (16 episodes; makemkv 1–26 angle 1, play-all ch15, title 28) ✅ **Fixed 2026-07-04**
+
+Multi-angle DVD: each episode has two makemkv titles (language variants) — script rips angle 1 only. **Menu 15 has no standalone title** (jumps 14→16); **3x15 No Weenies Allowed** is extracted from play-all title 30 chapter 15. Title 29 is angle 2 of Squilliam Returns — skip. Skip titles 31 (play-all angle 2), 32–33 (extras).
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 1 | 3x01 | The Algae's Always Greener |
+| 2 | 2 | 3x02 | SpongeGuard on Duty |
+| 3 | 4 | 3x03 | Club SpongeBob |
+| 4 | 6 | 3x04 | My Pretty Seahorse |
+| 5 | 8 | 3x05 | Just One Bite |
+| 6 | 10 | 3x06 | The Bully |
+| 7 | 12 | 3x07 | Nasty Patty |
+| 8 | 14 | 3x08 | Idiot Box |
+| 9 | 16 | 3x09 | Mermaid Man and Barnacle Boy IV |
+| 10 | 18 | 3x10 | Doing Time |
+| 11 | 20 | 3x11 | Snowball Effect |
+| 12 | 22 | 3x12 | One Krabs Trash |
+| 13 | 24 | 3x13 | As Seen on TV |
+| 14 | 26 | 3x14 | Can You Spare a Dime? |
+| 15 | 30 ch15 | 3x15 | No Weenies Allowed (play-all extract) |
+| 16 | 28 | 3x16 | Squilliam Returns |
+
+Resume: `VIDEOSRIPPER_START_AT=5 bash /mnt/game1/VideosRipper/scripts/archive/rip-s3-disc1.sh` (episode slot 1–16).
+
+### Disc 2 — `scripts/archive/rip-s3-disc2.sh` (14 episodes, DVD 3x17–3x30; makemkv 1,2,4,6,8,10,12,14,16,18,20,22,24,26) ✅ **Completed 2026-07-04**
+
+All 14 episodes ripped to `output/Season 3/` and copied to NAS (30 S3 files total with Disc 1). Log: `logs/rip-s3-disc2.log`.
+
+Disc menu lists 16 segments; **Party Pooper Pants** and **Ugh** are ~21 min specials (one file each). Skip play-all (28–29) and extras (30–31).
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 1 | 3x17 | Krab Borg |
+| 2 | 2 | 3x18 | Rock-a-Bye Bivalve |
+| 3 | 4 | 3x19 | Wet Painters |
+| 4 | 6 | 3x20 | Krusty Krab Training Video |
+| 5 | 8 | 3x21 | Party Pooper Pants (~22 min) |
+| 6 | 10 | 3x22 | Chocolate with Nuts |
+| 7 | 12 | 3x23 | Mermaid Man and Barnacle Boy V |
+| 8 | 14 | 3x24 | New Student Starfish |
+| 9 | 16 | 3x25 | Clams |
+| 10 | 18 | 3x26 | Ugh (~21 min) |
+| 11 | 20 | 3x27 | The Great Snail Race |
+| 12 | 22 | 3x28 | Mid-Life Crustacean |
+| 13 | 24 | 3x29 | Born Again Krabs |
+| 14 | 26 | 3x30 | I Had an Accident |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s3-disc2.sh` (slot 1–14).
+
+### Disc 3 — `scripts/archive/rip-s3-disc3.sh` (7 episodes, DVD 3x31–3x37; makemkv 0,2,4,6,8,10,12)
+
+Multi-angle DVD: each menu has two makemkv titles — script rips **angle 1 only** (even indices 0,2,4…). Old mapping 1–7 only covered menus 01–04 and missed 3x35–3x37. Title 8 is ~22 min special **The Sponge Who Could Fly**. Skip play-all (14–15), bonus Help Wanted (16), extras (17+).
+
+| Slot | MkIdx | Menu | File | Episode |
+|------|-------|------|------|---------|
+| 1 | 0 | 01 | 3x31 | Krabby Land |
+| 2 | 2 | 02 | 3x32 | The Camping Episode |
+| 3 | 4 | 03 | 3x33 | Missing Identity |
+| 4 | 6 | 04 | 3x34 | Plankton's Army |
+| 5 | 8 | 05 | 3x35 | The Sponge Who Could Fly (~22 min) |
+| 6 | 10 | 06 | 3x36 | SpongeBob Meets the Strangler |
+| 7 | 12 | 07 | 3x37 | Pranks a Lot |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s3-disc3.sh` (slot 1–7). Completing this disc finishes Season 3 (37 files total).
+
+## Season 4 — Complete Fourth Season (38 episodes DVD order)
+
+### Disc 1 — `scripts/archive/rip-s4-disc1.sh` (9 episodes, DVD 4x01–4x09; makemkv 1–8) ✅ **Completed 2026-07-04**
+
+All 9 episodes on local output and NAS. Log: `logs/rip-s4-disc1.log`.
+
+**Disc quirks:** Makemkv titles 4 and 5 are swapped vs menu labels (Krabs/Snail). **Title 8** is one file with two chapters — Selling Out then Funny Pants; script splits at ~662s into `4x08` and `4x09`. Skip makemkv title 9 (resolves to play-all).
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 1 | 4x01 | Fear of a Krabby Patty |
+| 2 | 2 | 4x02 | Shell of a Man |
+| 3 | 3 | 4x03 | The Lost Mattress |
+| 4 | 4 | 4x05 | Have You Seen This Snail? (~22 min) |
+| 5 | 5 | 4x04 | Krabs vs. Plankton |
+| 6 | 6 | 4x06 | Skill Crane |
+| 7 | 7 | 4x07 | Good Neighbors |
+| 8 | 8 ch1 | 4x08 | Selling Out |
+| 9 | 8 ch2 | 4x09 | Funny Pants |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s4-disc1.sh` (slot 1–9).
+
+### Disc 2 — `scripts/archive/rip-s4-disc2.sh` (9 episodes; makemkv 0–8)
+
+Scanned as `SBSP_S4_V1_D2`. No multi-angle dupes. **TheTVDB DVD numbers skip** (4x17, 4x19–4x21 are on other discs). Title 0 is ~23 min **Dunces and Dragons** (one file, 4x10). Title 8 is Wishing You Well + credits — split at ~663s for 4x22. Skip play-all (9), animatic/extras (10–11).
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 0 | 4x10 | Dunces and Dragons (~23 min) |
+| 2 | 1 | 4x12 | Mermaid Man and Barnacle Boy VI: The Motion Picture |
+| 3 | 2 | 4x11 | Enemy-in-Law |
+| 4 | 3 | 4x13 | Patrick SmartPants |
+| 5 | 4 | 4x14 | SquidBob TentaclePants |
+| 6 | 5 | 4x15 | Krusty Towers |
+| 7 | 6 | 4x16 | Mrs. Puff, You're Fired |
+| 8 | 7 | 4x18 | Ghost Host |
+| 9 | 8 ch1 | 4x22 | Wishing You Well |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s4-disc2.sh` (slot 1–9).
+
+### Disc 3 — `scripts/archive/rip-s4-disc3.sh` (10 episodes; makemkv 1–10)
+
+Scanned as `SBSP_S4_V2_D1`. Skip play-all title 0. Title 10 is That's No Lady + credits — split at ~643s for 4x28.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 1 | 4x17 | Chimps Ahoy |
+| 2 | 2 | 4x19 | Whale of a Birthday |
+| 3 | 3 | 4x20 | Karate Island |
+| 4 | 4 | 4x21 | All That Glitters |
+| 5 | 5 | 4x23 | New Leaf |
+| 6 | 6 | 4x24 | Once Bitten |
+| 7 | 7 | 4x25 | Bummer Vacation |
+| 8 | 8 | 4x26 | Wigstruck |
+| 9 | 9 | 4x27 | Squidtastic Voyage |
+| 10 | 10 ch1 | 4x28 | That's No Lady |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s4-disc3.sh` (slot 1–10).
+
+### Disc 4 — `scripts/archive/rip-s4-disc4.sh` (10 episodes; makemkv 1–10) ✅ **Completed 2026-07-04**
+
+Scanned as `SBSP_S4_V2_D2`. **Season 4 complete — 38 files** on NAS. Log: `logs/rip-s4-disc4.log`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 1 | 4x30 | Hocus Pocus |
+| 2 | 2 | 4x29 | The Thing |
+| 3 | 3 | 4x31 | Driven to Tears |
+| 4 | 4 | 4x32 | Rule of Dumb |
+| 5 | 5 | 4x34 | Best Frenemies |
+| 6 | 6 | 4x33 | Born to Be Wild |
+| 7 | 7 | 4x36 | Squid Wood |
+| 8 | 8 | 4x35 | The Pink Purloiner |
+| 9 | 9 | 4x37 | Best Day Ever |
+| 10 | 10 ch1 | 4x38 | The Gift of Gum |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s4-disc4.sh` (slot 1–10).
+
+## Season 7 — Complete Seventh Season (50 episodes DVD order)
+
+### Disc 1 — `scripts/archive/rip-s7-disc1.sh` (14 episodes, DVD 7x01–7x14; makemkv 1–14) ✅ **Completed 2026-07-05**
+
+All 14 episodes on NAS. Log: `logs/rip-s7-disc1.log`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1–13 | 1–13 | 7x01–7x13 | Tentacle-Vision → The Curse of Bikini Bottom |
+| 14 | 14 ch1 | 7x14 | Squidward in Clarinetland |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s7-disc1.sh` (slot 1–14).
+
+### Disc 2 — `scripts/archive/rip-s7-disc2.sh` (11 episodes, DVD 7x15–7x25; makemkv 1–11) ✅ **Completed 2026-07-05**
+
+All 11 episodes on NAS (25 S7 files with Disc 1). Log: `logs/rip-s7-disc2.log`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 1 | 7x15 | SpongeBob's Last Stand (~23 min) |
+| 2 | 2 | 7x16 | Back to the Past (~15 min) |
+| 3 | 3 | 7x17 | The Bad Guy Club for Villains (~8 min) |
+| 4–10 | 4–10 | 7x18–7x24 | A Day Without Tears → Gramma's Secret Recipe |
+| 11 | 11 ch1 | 7x25 | The Cent of Money |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s7-disc2.sh` (slot 1–11).
+
+### Disc 3 — `scripts/archive/rip-s7-disc3.sh` (13 episodes, DVD 7x26–7x38; makemkv 1–13) ✅ **Completed 2026-07-05**
+
+All 13 episodes on NAS (38 S7 files with Discs 1–2). Log: `logs/rip-s7-disc3.log`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1–6 | 1–6 | 7x26–7x31 | Monster Who Came to Bikini Bottom → Sponge-Cano! |
+| 7 | 7 | 7x32 | The Great Patty Caper (~22 min) |
+| 8–12 | 8–12 | 7x33–7x37 | That Sinking Feeling → The Abrasive Side |
+| 13 | 13 ch1 | 7x38 | Earworm |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s7-disc3.sh` (slot 1–13).
+
+### Disc 4 — `scripts/archive/rip-s7-disc4.sh` (12 episodes, DVD 7x39–7x50; makemkv 1–12) ✅ **Completed 2026-07-05**
+
+**Season 7 complete — 50 files** on NAS. Log: `logs/rip-s7-disc4.log`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1–11 | 1–11 | 7x39–7x49 | Hide and Then What Happens? → Big Sister Sam |
+| 12 | 12 ch1 | 7x50 | Perfect Chemistry |
+
+Resume: `VIDEOSRIPPER_START_AT=N bash /mnt/game1/VideosRipper/scripts/archive/rip-s7-disc4.sh` (slot 1–12).
+
+## Season 8 — Eighth Season (47 episodes DVD order)
+
+Manifests: `configs/spongebob/s8-disc{1,2,3,4}.yaml`. Legacy bash equivalents in `scripts/archive/rip-s8-disc*.sh`.
+
+### Disc 1 — `configs/spongebob/s8-disc1.yaml` (11 episodes, DVD 8x01–8x11; makemkv 1–11) ✅ **Completed 2026-07-05**
+
+All 11 episodes on NAS. Log: `logs/rip-s8-disc1.log`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1–6 | 1–6 | 8x01–8x06 | Accidents Will Happen → Sentimental Sponge |
+| 7 | 7 | 8x07 | Frozen Face-Off (~22 min) |
+| 8–11 | 8–11 | 8x08–8x11 | Squidward's School for Grown-Ups → The Googly Artiste |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s8-disc1.yaml`
+
+### Disc 2 — `configs/spongebob/s8-disc2.yaml` (12 episodes, DVD 8x12–8x23; makemkv 1–11, 13) ✅ **Completed 2026-07-05**
+
+All 12 episodes on NAS (23 S8 files with Disc 1). Log: `logs/rip-s8-disc2.log`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 1 | 8x12 | A SquarePants Family Vacation (~23 min) |
+| 2–5 | 2–5 | 8x13–8x16 | Patrick's Staycation → Mr. Krabs Takes a Vacation |
+| 6 | 6 | 8x17 | Ghoul Fools (~22 min) |
+| 7–11 | 7–11 | 8x18–8x22 | Mermaid Man Begins → House Sittin' for Sandy |
+| 12 | 13 | 8x23 | Smoothe Jazz at Bikini Bottom |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s8-disc2.yaml`
+
+### Disc 3 — `configs/spongebob/s8-disc3.yaml` (14 episodes, DVD 8x24–8x37; makemkv 1–11, 13–15) ✅ **Completed 2026-07-05**
+
+Scanned as `SPONGEBOB_SQUAREPANTS_S8`. Skip play-all title 0 (2:39:40), bonus title 12 (~5 min). Log: `logs/rip-s8-disc3.log`. Archived bash: `scripts/archive/rip-s8-disc3.sh`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1–11 | 1–11 | 8x24–8x34 | Bubble Troubles → Karen 2.0 |
+| 12–14 | 13–15 | 8x35–8x37 | InSPONGEiac → Glove World R.I.P. |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s8-disc3.yaml`
+
+### Disc 4 — `configs/spongebob/s8-disc4.yaml` (10 episodes, DVD 8x38–8x47; makemkv 1–10) 🔄 **In progress — Python CLI**
+
+Scanned as `SPONGEBOB_SQUAREPANTS_S8`. Skip play-all title 0 (2:19:06), bonus title 11 (~5 min). Log: `logs/rip-s8-disc4.log`. Completing this disc finishes Season 8 (47 files total on NAS).
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 1 | 8x38 | Squiditis |
+| 2 | 2 | 8x39 | Demolition Doofus |
+| 3 | 3 | 8x40 | Treats! |
+| 4 | 4 | 8x41 | For Here or to Go |
+| 5 | 5 | 8x42 | It's a SpongeBob Christmas! (~24 min) |
+| 6 | 6 | 8x43 | Super Evil Aquatic Villain Team Up is Go! |
+| 7 | 7 | 8x44 | Chum Fricassee |
+| 8 | 8 | 8x45 | The Good Krabby Name |
+| 9 | 9 | 8x46 | Move It or Lose It |
+| 10 | 10 | 8x47 | Hello Bikini Bottom! (~22 min) |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s8-disc4.yaml`
+
+## Season 9 — Ninth Season (49 episodes DVD order)
+
+Manifests: `configs/spongebob/s9-disc{1,2,3,4}.yaml`.
+
+### Disc 1 — `configs/spongebob/s9-disc1.yaml` (13 episodes, DVD 9x01–9x13; makemkv TINFO 0–6) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S9 D1`. Episodes are **paired on 2-chapter titles** (split at ffprobe chapter boundary); title 6 is single ~22 min special. Skip play-all TINFO 7 (2:34:17), bonus MSG titles 14+16 (~5 min, filtered by `--minlength=300`). Log: `logs/rip-s9-disc1.log`. Output: `output/Season 9/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 9/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 710.94s | 9x01–9x02 | Extreme Spots / Squirrel Record |
+| 2 | 1 | split 655.82s | 9x03–9x04 | Patrick-Man! / Gary's New Toy |
+| 3 | 2 | split 659.69s | 9x05–9x06 | License to Milkshake / Squid Baby |
+| 4 | 3 | split 660.03s | 9x07–9x08 | Little Yellow Book / Bumper to Bumper |
+| 5 | 4 | split 655.82s | 9x09–9x10 | Eek, an Urchin! / Squid Defense |
+| 6 | 5 | split 659.69s | 9x11–9x12 | Jailbreak! / Evil Spatula |
+| 7 | 6 | — | 9x13 | It Came from Goo Lagoon (~22 min) |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s9-disc1.yaml`
+
+### Disc 2 — `configs/spongebob/s9-disc2.yaml` (13 episodes, DVD 9x14–9x26; makemkv TINFO 0–6) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S9 D2`. Episodes are **paired on 2-chapter titles** (split at ffprobe chapter boundary); title 3 is single ~22 min special (9x20). Skip play-all TINFO 7 (2:33:16), bonus MSG titles 14+16 (~5 min, filtered by `--minlength=300`). Log: `logs/rip-s9-disc2.log`. Output: `output/Season 9/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 9/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 710.61s | 9x14–9x15 | Safe Deposit Krabs / Plankton's Pet |
+| 2 | 1 | split 658.32s | 9x16–9x17 | Don't Look Now / Séance Shméance |
+| 3 | 2 | split 660.09s | 9x18–9x19 | Kenny the Cat / Yeti Krabs |
+| 4 | 3 | — | 9x20 | SpongeBob You're Fired (~22 min) |
+| 5 | 4 | split 646.61s | 9x21–9x22 | Lost in Bikini Bottom / Tutor Sauce |
+| 6 | 5 | split 651.32s | 9x23–9x24 | Squid Plus One / The Executive Treatment |
+| 7 | 6 | split 655.59s | 9x25–9x26 | Company Picnic / Pull Up a Barrel |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s9-disc2.yaml`
+
+### Disc 3 — `configs/spongebob/s9-disc3.yaml` (14 episodes, DVD 9x27–9x40; makemkv TINFO 0–6) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S9 D3`. All 7 slots are **paired on 2-chapter titles** (split at ffprobe chapter boundary). Skip play-all TINFO 7 (2:33:31), bonus MSG titles 14+16 (~5 min, 298s; filtered by `--minlength=300`). Log: `logs/rip-s9-disc3.log`. Output: `output/Season 9/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 9/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 706.41s | 9x27–9x28 | Sanctuary! / What's Eating Patrick? |
+| 2 | 1 | split 652.62s | 9x29–9x30 | Patrick! The Game / The Sewers of Bikini Bottom |
+| 3 | 2 | split 657.62s | 9x31–9x32 | SpongeBob LongPants / Larry's Gym |
+| 4 | 3 | split 652.65s | 9x33–9x34 | The Fish Bowl / Married to Money |
+| 5 | 4 | split 660.63s | 9x35–9x36 | Mall Girl Pearl / Two Thumbs Down |
+| 6 | 5 | split 653.85s | 9x37–9x38 | Sharks vs. Pods / CopyBob DittoPants |
+| 7 | 6 | split 651.62s | 9x39–9x40 | Sold! / Lame and Fortune |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s9-disc3.yaml`
+
+### Disc 4 — `configs/spongebob/s9-disc4.yaml` (9 episodes, DVD 9x41–9x49; makemkv TINFO 0–4) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S9 D4`. Title 0 is single ~22 min special (9x41); titles 1–4 are **paired on 2-chapter titles** (split at ffprobe chapter boundary). Skip play-all TINFO 5 (1:50:21), bonus Krabby Patty shorts TINFO 6 (~6:37, 5 chapters), MSG titles 14+16 (~3:35, 215s; filtered by `--minlength=300`). Log: `logs/rip-s9-disc4.log`. Output: `output/Season 9/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 9/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | — | 9x41 | Goodbye, Krabby Patty? (~22 min) |
+| 2 | 1 | split 658.69s | 9x42–9x43 | Sandy's Nutmare / Bulletin Board |
+| 3 | 2 | split 659.19s | 9x44–9x45 | Food Con Castaways / Snail Mail |
+| 4 | 3 | split 658.99s | 9x46–9x47 | Pineapple Invasion / Salsa Imbecilicus |
+| 5 | 4 | split 658.44s | 9x48–9x49 | Mutiny on the Krusty / The Whole Tooth |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s9-disc4.yaml`
+
+**Season 9 status:** All 4 discs complete — **49** DVD-order episodes in `output/Season 9/` and NAS.
+
+## Season 10 — Tenth Season (22 episodes DVD order)
+
+Manifests: `configs/spongebob/s10-disc{1,2}.yaml`.
+
+### Disc 1 — `configs/spongebob/s10-disc1.yaml` (14 episodes, DVD 10x01–10x14; makemkv TINFO 0–6) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S10 D1`. All 7 slots are **paired on 2-chapter titles** (split at ffprobe chapter boundary). Skip play-all TINFO 7 (2:34:13), bonus TINFO 8 (~5:05), MSG titles 14+16 (~5:05 duplicate). Log: `logs/rip-s10-disc1.log`. Output: `output/Season 10/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 10/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 712.28s | 10x01–10x02 | Whirly Brains / Mermaid Pants |
+| 2 | 1 | split 661.33s | 10x03–10x04 | Unreal Estate / Code Yellow |
+| 3 | 2 | split 661.49s | 10x05–10x06 | Mimic Madness / House Worming |
+| 4 | 3 | split 656.41s | 10x07–10x08 | Snooze You Lose / Krusty Katering |
+| 5 | 4 | split 661.33s | 10x09–10x10 | SpongeBob's Place / Plankton Gets the Boot |
+| 6 | 5 | split 655.32s | 10x11–10x12 | Life Insurance / Burst Your Bubble |
+| 7 | 6 | split 654.32s | 10x13–10x14 | Plankton Retires / Trident Trouble |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s10-disc1.yaml`
+
+### Disc 2 — `configs/spongebob/s10-disc2.yaml` (8 episodes, DVD 10x15–10x22; makemkv TINFO 0–3) 🔄 **In progress — Python CLI**
+
+Scanned as `SPONGEBOB SQUAREPANTS S10 D2`. All 4 slots are **paired on 2-chapter titles** (split at ffprobe chapter boundary). Skip play-all TINFO 4 (1:28:27), bonus MSG titles 14+16 (~3 min, 178s; filtered by `--minlength=300`). Log: `logs/rip-s10-disc2.log`. Output: `output/Season 10/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 10/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 705.94s | 10x15–10x16 | The Incredible Shrinking Sponge / Sportz? |
+| 2 | 1 | split 651.32s | 10x17–10x18 | The Getaway / Lost and Found |
+| 3 | 2 | split 659.33s | 10x19–10x20 | Patrick's Coupon / Out of the Picture |
+| 4 | 3 | split 946.40s | 10x21–10x22 | Feral Friends / Don't Wake Patrick |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s10-disc2.yaml`
+
+**Season 10 status:** Disc 1 complete (14 episodes). Disc 2 in progress (8 episodes, 10x15–10x22). Completing Disc 2 finishes Season 10 (22 files total on NAS).
+
+## Season 11 — Eleventh Season (50 episodes DVD order)
+
+Manifests: `configs/spongebob/s11-disc{1,2,3}.yaml` (as authored).
+
+### Disc 1 — `configs/spongebob/s11-disc1.yaml` (17 episodes, DVD 11x01–11x17; makemkv TINFO 0–8) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S11 D1`. TINFO 0–3 and 5–8 are **paired on 2-chapter titles** (split at ffprobe chapter boundary); TINFO 4 is single ~22 min special **The Legend of Boo-Kini Bottom** (no chapter metadata in rip). Skip play-all TINFO 9 (3:18:03), bonus TINFO 10 (~6:49, 409s). Log: `logs/rip-s11-disc1.log`. Output: `output/Season 11/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 11/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 712.63s | 11x01–11x02 | Cave Dwelling Sponge / The Clam Whisperer |
+| 2 | 1 | split 658.49s | 11x03–11x04 | Spot Returns / The Check-Up |
+| 3 | 2 | split 657.36s | 11x05–11x06 | Spin the Bottle / There's a Sponge in My Soup |
+| 4 | 3 | split 659.41s | 11x07–11x08 | Man Ray Returns / Larry the Floor Manager |
+| 5 | 4 | — | 11x09 | The Legend of Boo-Kini Bottom (~22 min) |
+| 6 | 5 | split 661.36s | 11x10–11x11 | No Pictures Please / Stuck on the Roof |
+| 7 | 6 | split 656.52s | 11x12–11x13 | Krabby Patty Creature Feature / Teacher's Pests |
+| 8 | 7 | split 661.36s | 11x14–11x15 | Sanitation Insanity / Bunny Hunt |
+| 9 | 8 | split 658.41s | 11x16–11x17 | Squid Noir / Scavenger Pants |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s11-disc1.yaml`
+
+### Disc 2 — `configs/spongebob/s11-disc2.yaml` (18 episodes, DVD 11x18–11x35; makemkv TINFO 0–8) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S11 D2`. All 9 slots are **paired on 2-chapter titles** (split at ffprobe chapter boundary). Skip play-all TINFO 9 (3:18:07), bonus TINFO 10 (~6:53, 413s). Log: `logs/rip-s11-disc2.log`. Output: `output/Season 11/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 11/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 710.74s | 11x18–11x19 | Cuddle E. Hugs / Pat the Horse |
+| 2 | 1 | split 652.40s | 11x20–11x21 | Chatterbox Gary / Don't Feed the Clowns |
+| 3 | 2 | split 656.41s | 11x22–11x23 | Drive Happy / Old Man Patrick |
+| 4 | 3 | split 659.41s | 11x24–11x25 | Fun-Sized Friends / Grandmum's the Word |
+| 5 | 4 | split 660.26s | 11x26–11x27 | Doodle Dimension / Moving Bubble Bass |
+| 6 | 5 | split 660.41s | 11x28–11x29 | High Sea Diving / Bottle Burglars |
+| 7 | 6 | split 661.36s | 11x30–11x31 | My Leg! / Ink Lemonade |
+| 8 | 7 | split 658.32s | 11x32–11x33 | Mustard O' Mine / Shopping List |
+| 9 | 8 | split 661.36s | 11x34–11x35 | Whale Watching / Krusty Kleaners |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s11-disc2.yaml`
+
+### Disc 3 — `configs/spongebob/s11-disc3.yaml` (15 episodes, DVD 11x36–11x50; makemkv TINFO 0–7) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S11 D3`. TINFO 0–2 and 4–7 are **paired on 2-chapter titles** (split at ffprobe chapter boundary); TINFO 3 is single ~22 min special **Goons on the Moon**; TINFO 7 uses extended first chapter (~970 s) for Squirrel Jelly / The String. Skip play-all TINFO 8 (2:55:24), bonus TINFO 9 (~6:05, 365s). Log: `logs/rip-s11-disc3.log`. Output: `output/Season 11/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 11/`. **Completing this disc finishes Season 11 (50 files total on NAS).**
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 710.83s | 11x36–11x37 | Patnocchio / ChefBob |
+| 2 | 1 | split 653.44s | 11x38–11x39 | Plankton Paranoia / Library Cards |
+| 3 | 2 | split 658.44s | 11x40–11x41 | Call the Cops / Surf N' Turf |
+| 4 | 3 | — | 11x42 | Goons on the Moon (~22 min) |
+| 5 | 4 | split 660.44s | 11x43–11x44 | Appointment TV / Karen's Virus |
+| 6 | 5 | split 654.12s | 11x45–11x46 | The Grill is Gone / The Night Patty |
+| 7 | 6 | split 651.43s | 11x47–11x48 | Bubbletown / Girls' Night Out |
+| 8 | 7 | split 970.00s | 11x49–11x50 | Squirrel Jelly / The String |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s11-disc3.yaml`
+
+**Season 11 status:** Disc 1 complete (17 episodes, 11x01–11x17). Disc 2 complete (18 episodes, 11x18–11x35). Disc 3 complete (15 episodes, 11x36–11x50). **Season 11 complete — 50 files** on NAS.
+
+## Season 13 — Thirteenth Season (52 episodes DVD order)
+
+Manifests: `configs/spongebob/s13-disc{1,2,3,4}.yaml` (as authored).
+
+### Disc 1 — `configs/spongebob/s13-disc1.yaml` (13 episodes, DVD 13x01–13x13; makemkv TINFO 0–6) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S13 D1`. **No play-all or bonus titles** exposed by MakeMKV (DVD MSG titles 1–3 absent; only MSG 4–10 / TINFO 0–6). TINFO 0–3 and 5–6 are **paired on 3-chapter titles** (split at ffprobe chapter-1 boundary; chapter 3 is end credits); TINFO 4 is single ~22 min special **SpongeBob's Road to Christmas**. Log: `logs/rip-s13-disc1.log`. Scan log: `logs/scan-s13-disc1-2026-07-06.log`. Output: `output/Season 13/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 13/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #4).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 686.35s | 13x01–13x02 | A Place for Pets / Lockdown for Love |
+| 2 | 1 | split 645.51s | 13x03–13x04 | Under the Small Top / Squidward's Sick Daze |
+| 3 | 2 | split 658.32s | 13x05–13x06 | Goofy Scoopers / Pat the Dog |
+| 4 | 3 | split 646.98s | 13x07–13x08 | Something Narwhal This Way Comes / C.H.U.M.S |
+| 5 | 4 | — | 13x09 | SpongeBob's Road to Christmas (~22 min) |
+| 6 | 5 | split 647.81s | 13x10–13x11 | Potato Puff / There Will Be Grease |
+| 7 | 6 | split 652.52s | 13x12–13x13 | The Big Bad Bubble Bass / Sea-Man Sponge Haters Club |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s13-disc1.yaml`
+
+### Disc 2 — `configs/spongebob/s13-disc2.yaml` (14 episodes, DVD 13x14–13x27; makemkv TINFO 0–6) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S13 D2`. **No play-all or bonus titles** exposed by MakeMKV (7 TINFO titles only). All 7 slots are **paired on 3-chapter titles** (split at ffprobe chapter-1 boundary; chapter 3 is end credits); TINFO 3 uses extended first chapter (~849 s) for Squidferatu / Slappy Daze. Log: `logs/rip-s13-disc2.log`. Scan log: `logs/scan-s13-disc2-2026-07-06.log`. Output: `output/Season 13/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 13/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD.
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 690.36s | 13x14–13x15 | Food PBFFT! Truck / Upturn Girls |
+| 2 | 1 | split 662.16s | 13x16–13x17 | Say Awww! / Patrick the Mailman |
+| 3 | 2 | split 655.32s | 13x18–13x19 | Captain Pipsqueak / Plane to Sea |
+| 4 | 3 | split 849.35s | 13x20–13x21 | Squidferatu / Slappy Daze |
+| 5 | 4 | split 645.34s | 13x22–13x23 | Welcome to Binary Bottom / You're Going to Pay...Phone |
+| 6 | 5 | split 660.03s | 13x24–13x25 | A Skin Wrinkle in Time / Abandon Twits |
+| 7 | 6 | split 646.31s | 13x26–13x27 | Wallhalla / Salty Sponge |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s13-disc2.yaml`
+
+**Karen for Spot (13x28):** Listed on DVD packaging after Salty Sponge on Disc 2, but **not exposed as a MakeMKV title** on D2 or D3 scans — found on **D4 TINFO 0** (chapter extract); see Disc 4 section.
+
+### Disc 3 — `configs/spongebob/s13-disc3.yaml` (14 episodes, DVD 13x29–13x42; makemkv TINFO 0–6) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S13 D3`. **No play-all or bonus titles** exposed by MakeMKV (7 TINFO titles only). All 7 slots are **paired on 3-chapter titles** (split at ffprobe chapter-1 boundary; chapter 3 is end credits); TINFO 6 uses extended first chapter (~885 s) for Dopey Dick / Plankton and the Beanstalk. Log: `logs/rip.log` (legacy: `logs/rip-s13-disc3.log`). Output: `output/Season 13/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 13/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD. Physical menu starts with Arbor Day Disarray (TheTVDB **13x29**); **13x28 Karen for Spot** is not on this disc scan (see D2/D4 notes).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 690.52s | 13x29–13x30 | Arbor Day Disarray / Ain't That the Tooth |
+| 2 | 1 | split 656.32s | 13x31–13x32 | Ma and Pa's Big Hurrah / Yellow Pavement |
+| 3 | 2 | split 657.66s | 13x33–13x34 | The Flower Plot / SpongeBob on Parade |
+| 4 | 3 | split 661.33s | 13x35–13x36 | Delivery to Monster Island / Ride Patrick Ride |
+| 5 | 4 | split 661.16s | 13x37–13x38 | Hot Crossed Nuts / Sir Urchin and Snail Fail |
+| 6 | 5 | split 657.32s | 13x39–13x40 | Friendiversary / Mandatory Music |
+| 7 | 6 | split 885.08s | 13x41–13x42 | Dopey Dick / Plankton and the Beanstalk |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s13-disc3.yaml`
+
+### Disc 4 — `configs/spongebob/s13-disc4.yaml` (11 episodes, DVD 13x28 + 13x43–13x52; makemkv TINFO 0–5) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S13 D4`. **No play-all or bonus titles** exposed by MakeMKV (6 TINFO titles). TINFO 0 is a **6-chapter combined title** (~44 min): **13x28 Karen for Spot** is extracted from chapter 1 (ffprobe index 1, ~652 s); remaining cells duplicate content also on TINFO 1–2 — rip 13x43+ from TINFO 1–5. TINFO 1–5 are **paired on 3-chapter titles** (split at ffprobe chapter-1 boundary). Log: `logs/rip.log`, `logs/debug.log`. Scan: `logs/scan.log`. Output: `output/Season 13/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 13/`. **Completing this disc finishes Season 13 (52 DVD-order files on NAS).**
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD.
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | extract ch1 | 13x28 | Karen for Spot |
+| 2 | 1 | split 698.70s | 13x43–13x44 | My Friend Patty / FUN-Believable |
+| 3 | 2 | split 653.49s | 13x45–13x46 | Spatula of the Heavens / Gary's Playhouse |
+| 4 | 3 | split 645.14s | 13x47–13x48 | Swimming Fools / The Goobfather |
+| 5 | 4 | split 662.03s | 13x49–13x50 | SquidBird / Allergy Attack! |
+| 6 | 5 | split 661.69s | 13x51–13x52 | Big Top Flop / Sandy, Help Us! |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s13-disc4.yaml`
+
+**Karen for Spot (13x28):** Missing from D2/D3 MakeMKV scans; **found on D4 TINFO 0** as chapter 1 (~652 s) within the 6-chapter combined title.
+
+**Season 13 status:** All 4 discs complete — **52** DVD-order episodes in `output/Season 13/` and NAS. **Season 13 complete.**
+
+## Season 12 — Twelfth Season (48 episodes DVD order)
+
+Manifests: `configs/spongebob/s12-disc{1,2,3}.yaml` (as authored).
+
+### Disc 1 — `configs/spongebob/s12-disc1.yaml` (18 episodes, DVD 12x01–12x18; makemkv TINFO 0–8) ✅ **Completed 2026-07-06**
+
+Scanned as `SPONGEBOB SQUAREPANTS S12 D1`. All 9 slots are **paired on 2-chapter titles** (split at ffprobe chapter-0 boundary); TINFO 0 uses extended first chapter (~708 s) for FarmerBob / Gary & Spot; TINFO 5 uses extended first chapter (~945 s) for Swamp Mates / One Trick Sponge. TINFO 4 reports 3 DVD chapters in MakeMKV scan but ffprobe exposes 2 chapters — split at chapter-0 boundary. Skip play-all TINFO 9 (3:24:32). No bonus titles filtered by `--minlength=300`. Log: `logs/rip.log`. Output: `output/Season 12/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 12/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 707.51s | 12x01–12x02 | FarmerBob / Gary & Spot |
+| 2 | 1 | split 660.16s | 12x03–12x04 | The Nitwitting / The Ballad of Filthy Muck |
+| 3 | 2 | split 651.08s | 12x05–12x06 | The Krusty Slammer / Pineapple RV |
+| 4 | 3 | split 656.09s | 12x07–12x08 | Gary's Got Legs / King Plankton |
+| 5 | 4 | split 661.03s | 12x09–12x10 | Plankton's Old Chum / Stormy Weather |
+| 6 | 5 | split 944.71s | 12x11–12x12 | Swamp Mates / One Trick Sponge |
+| 7 | 6 | split 659.09s | 12x13–12x14 | The Krusty Bucket / Squid's on a Bus |
+| 8 | 7 | split 653.09s | 12x15–12x16 | Sandy's Nutty Nieces / Insecurity Guards |
+| 9 | 8 | split 652.40s | 12x17–12x18 | Broken Alarm / Karen's Baby |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s12-disc1.yaml`
+
+### Disc 2 — `configs/spongebob/s12-disc2.yaml` (15 episodes, DVD 12x19–12x33; makemkv TINFO 0–7) ✅ **Completed 2026-07-07**
+
+Scanned as `SPONGEBOB SQUAREPANTS S12 D2`. TINFO 0–2 and 4–7 are **paired on 2-chapter titles** (split at ffprobe chapter-0 boundary); TINFO 0 and 5 use extended first chapter (~710 s / ~940 s); TINFO 3 is single ~43 min special **SpongeBob's Big Birthday Blowout**; TINFO 4 reports 3 DVD chapters in MakeMKV scan but ffprobe exposes 2 chapters — split at chapter-0 boundary. Skip play-all TINFO 8 (3:22:17). No bonus titles filtered by `--minlength=300`. Log: `logs/rip.log`. Output: `output/Season 12/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 12/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 709.51s | 12x19–12x20 | Shell Games / Senior Discount |
+| 2 | 1 | split 661.16s | 12x21–12x22 | Mind the Gap / Dirty Bubble Returns |
+| 3 | 2 | split 660.09s | 12x23–12x24 | Jolly Lodgers / Biddy Sitting |
+| 4 | 3 | — | 12x25 | SpongeBob's Big Birthday Blowout (~43 min) |
+| 5 | 4 | split 661.03s | 12x26–12x27 | SpongeBob in RandomLand / SpongeBob's Bad Habit |
+| 6 | 5 | split 940.04s | 12x28–12x29 | Handemonium / Breakin' |
+| 7 | 6 | split 654.09s | 12x30–12x31 | Boss for a Day / The Goofy Newbie |
+| 8 | 7 | split 652.08s | 12x32–12x33 | The Ghost of Plankton / My Two Krabses |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s12-disc2.yaml`
+
+### Disc 3 — `configs/spongebob/s12-disc3.yaml` (15 episodes, DVD 12x34–12x48; makemkv TINFO 0–7) ✅ **Completed 2026-07-07**
+
+Scanned as `SPONGEBOB SQUAREPANTS S12 D3`. TINFO 0–2, 4–7 are **paired on 2-chapter titles** (split at ffprobe chapter-0 boundary); TINFO 0 and 7 use extended first chapter (~705 s / ~847 s); TINFO 3 is single ~11 min **Who R Zoo?**; TINFO 4 reports 3 DVD chapters in MakeMKV scan but ffprobe exposes 2 chapters — split at chapter-0 boundary; TINFO 6 has no ffprobe chapter markers — split at ~655 s (same boundary as TINFO 5). Skip play-all TINFO 8 (2:50:28), bonus TINFO 9 (~22 min, MSG 15). Log: `logs/rip.log`. Output: `output/Season 12/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 12/`. **Completing this disc finishes Season 12 (48 DVD-order files on NAS).**
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #3).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 704.50s | 12x34–12x35 | Knock Knock, Who's There? / Pat Hearts Squid |
+| 2 | 1 | split 654.09s | 12x36–12x37 | Lighthouse Louie / Hiccup Plague |
+| 3 | 2 | split 651.08s | 12x38–12x39 | A Cabin in the Kelp / The Hankering |
+| 4 | 3 | — | 12x40 | Who R Zoo? (~12 min) |
+| 5 | 4 | split 660.09s | 12x41–12x42 | Kwarantined Krab / Plankton's Intern |
+| 6 | 5 | split 655.09s | 12x43–12x44 | Patrick's Tantrum / Bubble Bass's Tab |
+| 7 | 6 | split 655.09s | 12x45–12x46 | Kooky Cooks / Escape from Beneath Glove World |
+| 8 | 7 | split 846.51s | 12x47–12x48 | Krusty Koncessionaires / Dream Hoppers |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s12-disc3.yaml`
+
+**Season 12 status:** All 3 discs complete — **48** DVD-order episodes in `output/Season 12/` and NAS. **Season 12 complete.**
+
+## Season 14 — Fourteenth Season (21 episodes DVD order)
+
+Manifests: `configs/spongebob/s14-disc{1,2}.yaml` (as authored).
+
+### Disc 1 — `configs/spongebob/s14-disc1.yaml` (12 episodes, DVD 14x01–14x12; makemkv TINFO 0–5) ✅ **Completed 2026-07-07**
+
+Scanned as `SPONGEBOB SQUAREPANTS S14 D1`. All 6 slots are **paired on 3-chapter titles** (split at ffprobe chapter-1 boundary; chapter 3 is end credits). **No play-all or bonus titles** exposed by MakeMKV at `--minlength=300` (TCOUNT 6 only; DVD MSG titles 1–3 absent). Log: `logs/rip.log`. Output: `output/Season 14/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 14/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #4).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 695.56s | 14x01–14x02 | Single Celled Defense / Buff for Puff |
+| 2 | 1 | split 661.86s | 14x03–14x04 | We Heart Hoops / SpongeChovy |
+| 3 | 2 | split 661.69s | 14x05–14x06 | BassWard / Squidiot Box |
+| 4 | 3 | split 661.99s | 14x07–14x08 | Blood is Thicker Than Grease / Don't Make Me Laugh |
+| 5 | 4 | split 661.66s | 14x09–14x10 | Momageddon / Pet the Rock |
+| 6 | 5 | split 657.32s | 14x11–14x12 | Tango Tangle / Necro-Nom-Nom-Nom-I-Con |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s14-disc1.yaml`
+
+### Disc 2 — `configs/spongebob/s14-disc2.yaml` (9 episodes, DVD 14x13–14x21; makemkv TINFO 0–5) ✅ **Completed 2026-07-07**
+
+Scanned as `SPONGEBOB SQUAREPANTS S14 D2`. TINFO 0, 1, 4 are **paired on 3-chapter titles** (split at ffprobe chapter-1 boundary; chapter 3 is end credits); TINFO 2–3 and 5 are **single-title specials** (Kreepaway Kamp ~44 min, Snow Yellow ~22 min, Sandy's Country Christmas ~23 min). **No play-all or bonus titles** exposed by MakeMKV at `--minlength=300` (TCOUNT 6 only). Log: `logs/rip.log`. Output: `output/Season 14/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 14/`. **Completing this disc finishes Season 14 (21 DVD-order files on NAS).**
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #4).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 706.57s | 14x13–14x14 | PL-1413 / In the Mood to Feud |
+| 2 | 1 | split 661.99s | 14x15–14x16 | Mooned! / Hysterical History |
+| 3 | 2 | — | 14x17 | Kreepaway Kamp (~44 min) |
+| 4 | 3 | — | 14x18 | Snow Yellow (~22 min) |
+| 5 | 4 | split 654.02s | 14x19–14x20 | The Dirty Bubble Bass / Sheldon SquarePants |
+| 6 | 5 | — | 14x21 | Sandy's Country Christmas (~23 min) |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s14-disc2.yaml`
+
+**Season 14 status:** All 2 discs complete — **21** DVD-order episodes in `output/Season 14/` and NAS. **Season 14 complete.**
+
+## Season 15 — Fifteenth Season (26 episodes DVD order)
+
+Manifests: `configs/spongebob/s15-disc{1,2}.yaml` (as authored).
+
+### Disc 1 — `configs/spongebob/s15-disc1.yaml` (14 episodes, DVD 15x01–15x14; makemkv TINFO 0–6) ✅ **Completed 2026-07-07**
+
+Scanned as `SPONGEBOB SQUAREPANTS S15 D1`. All 7 slots are **paired on 3-chapter titles** (split at ffprobe chapter-0 end; chapter 2 is end credits). **No play-all or bonus titles** exposed by MakeMKV at `--minlength=300` (TCOUNT 7 only; DVD MSG titles 1–3 absent). Log: `logs/rip.log`. Output: `output/Season 15/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 15/`.
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #4).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 699.23s | 15x01–15x02 | Sammy Suckerfish / Big League Bob |
+| 2 | 1 | split 660.33s | 15x03–15x04 | UpWard / Unidentified Flailing Octopus |
+| 3 | 2 | split 660.19s | 15x05–15x06 | Bad Luck Bob / The Sandman Cometh |
+| 4 | 3 | split 656.16s | 15x07–15x08 | Biscuit Ballyhoo / Student Driver Survivor |
+| 5 | 4 | split 647.35s | 15x09–15x10 | Wiener Takes All / Stuck in an Elevator |
+| 6 | 5 | split 647.65s | 15x11–15x12 | Squidness Protection / Dome Alone |
+| 7 | 6 | split 660.03s | 15x13–15x14 | Wary Gary / Pinned |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s15-disc1.yaml`
+
+### Disc 2 — `configs/spongebob/s15-disc2.yaml` (12 episodes, DVD 15x15–15x26; makemkv TINFO 0–5) ✅ **Completed 2026-07-07**
+
+Scanned as `SPONGEBOB SQUAREPANTS S15 D2`. All 6 slots are **paired on 3-chapter titles** (split at ffprobe chapter-0 end; chapter 2 is end credits). **No play-all or bonus titles** exposed by MakeMKV at `--minlength=300` (TCOUNT 6 only; DVD MSG titles 1–3 absent). Log: `logs/rip.log`. Output: `output/Season 15/`. NAS: `/mnt/tn-sas/Anime/Spongebob Squarepants/Season 15/`. **Completing this disc finishes Season 15 (26 DVD-order files on NAS).**
+
+**Note:** On this disc, `makemkv_title` in YAML is the **TINFO index** from scan (0-based filtered list), not the MSG title number on the DVD (episodes start at MSG #4).
+
+| Slot | MkIdx | Ch | File | Episode |
+|------|-------|----|------|---------|
+| 1 | 0 | split 706.24s | 15x15–15x16 | Jeffy T's Prankwell Emporium / A Taste of Plankton |
+| 2 | 1 | split 659.36s | 15x17–15x18 | Smartificial Intelligence / Firehouse Bob |
+| 3 | 2 | split 659.69s | 15x19–15x20 | Pablum Plankton / MuseBob ModelPants |
+| 4 | 3 | split 654.52s | 15x21–15x22 | Delivery of Doom / My Father the Boat |
+| 5 | 4 | split 649.98s | 15x23–15x24 | Who's Afraid of Mr. Snippers? / A Fish Called Sandy |
+| 6 | 5 | split 661.86s | 15x25–15x26 | Making Waves / Captain Quasar: The Next Iteration |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/spongebob/s15-disc2.yaml`
+
+**Season 15 status:** All 2 discs complete — **26** DVD-order episodes in `output/Season 15/` and NAS. **Season 15 complete.**
+
+## Naruto Shippuden — Blu-ray (Anime share)
+
+Manifests: `configs/anime/naruto-shippuden-set*.yaml`. Output: `output/Naruto Shippuden/Season N/`. NAS: `/mnt/tn-sas/Anime/Naruto Shippuden/Season N/`.
+
+**Important:** Viz Blu-ray **box-set number ≠ Plex season**. Before authoring YAML, list the NAS season folder and match the next missing `Nx##` episode numbers — do not assume Set N → Season N.
+
+**Viz Blu-ray set → TVDB/Plex season mapping (2023–2026 NA releases):**
+
+| Viz set | Abs. eps | TVDB seasons | Disc layout (7 eps/disc) |
+|---------|----------|--------------|--------------------------|
+| Set 8 | 193–220 | 9–10 | D1 193–199 … D4 214–220 |
+| Set 9 | 221–248 | 10–12 | D1 221–227 … D4 242–248 |
+| **Set 10** | **249–276** | **12–13** | **D1 249–255 · D2 256–262 · D3 263–269 · D4 270–276** |
+| Set 11 | 277–304 | 13–14 | D1 277–283 … D4 298–304 |
+
+Sources: [Viz Part 10](https://www.viz.com/anime/tv-show/naruto-shippuden-video/video-unit/18), [Blu-ray.com Set 10](https://www.blu-ray.com/movies/Naruto-Shippuden-Set-10-Blu-ray/408670/), [ANN Set 10](https://www.animenewsnetwork.com/encyclopedia/releases.php?id=57466), [TheTVDB S12](https://thetvdb.com/series/naruto-shippuden/seasons/official/12), [TheTVDB S13](https://thetvdb.com/series/naruto-shippuden/seasons/official/13). **Note:** legacy DVD “Set 10” (2012) is episodes 113–126 — different product from the Blu-ray line.
+
+**Set 10 full episode list (28 eps, 249–276):**
+
+249 Thank You · 250 Battle in Paradise! Odd Beast vs. The Monster! · 251 The Man Named Kisame · 252 The Angelic Herald of Death · 253 The Bridge to Peace · 254 The Super Secret S-Rank Mission · 255 The Artist Returns · 256 Assemble! Allied Shinobi Forces! · 257 Meeting · 258 Rivals · 259 Rift · 260 Parting · 261 For My Friend · 262 War Begins! · 263 Sai and Shin · 264 Secrets of the Reanimation Jutsu · 265 An Old Nemesis Returns · 266 The First and Last Opponent · 267 The Brilliant Military Advisor of the Hidden Leaf · 268 Battleground! · 269 Forbidden Words · 270 Golden Bonds · 271 Road to Sakura · 272 Mifune vs. Hanzo · 273 True Kindness · 274 The Complete Ino-Shika-Cho Formation! · 275 A Message from the Heart · 276 Attack of the Gedo Statue
+
+Season boundary: **249–275 = Season 12** (TVDB S12E07–S12E33); **276 = Season 13** (TVDB S13E01). Set 9 ends at 248 (S12E06); Set 11 starts at 277 (S13E02).
+
+### Set 10 Disc 1 — `configs/anime/naruto-shippuden-set10-disc1.yaml` (7 episodes, 12x249–12x255; makemkv titles 0–6) ✅ **Completed 2026-07-08**
+
+Scanned as 7 titles (~23 min each) at `--minlength=300`. **Plex Season 12** (NAS already had 12x243–12x248). Skip menus/extras filtered by minlength. Log: `logs/rip.log`. `stream_defaults`: Japanese audio default, English subs default, keep all tracks. Output: `output/Naruto Shippuden/Season 12/`. NAS: `/mnt/tn-sas/Anime/Naruto Shippuden/Season 12/`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 0 | 12x249 | Thank You |
+| 2 | 1 | 12x250 | Battle in Paradise! Odd Beast vs. The Monster! |
+| 3 | 2 | 12x251 | The Man Named Kisame |
+| 4 | 3 | 12x252 | The Angelic Herald of Death |
+| 5 | 4 | 12x253 | The Bridge to Peace |
+| 6 | 5 | 12x254 | The Super Secret S-Rank Mission |
+| 7 | 6 | 12x255 | The Artist Returns |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/anime/naruto-shippuden-set10-disc1.yaml`
+
+### Set 10 Disc 2 — `configs/anime/naruto-shippuden-set10-disc2.yaml` (7 episodes, 12x256–12x262; makemkv titles 0–6) ✅ **Completed 2026-07-08**
+
+Scanned as `Naruto Shippuden 256 - 262` — 7 titles (~23:36 each) at `--minlength=300`. **Plex Season 12** (S12 E14–E20). No play-all or bonus titles exposed by minlength filter. Log: `logs/rip.log`. `stream_defaults`: Japanese audio default, English subs default, keep all tracks. Output: `output/Naruto Shippuden/Season 12/`. NAS: `/mnt/tn-sas/Anime/Naruto Shippuden/Season 12/`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 0 | 12x256 | Assemble! Allied Shinobi Forces! |
+| 2 | 1 | 12x257 | Meeting |
+| 3 | 2 | 12x258 | Rivals |
+| 4 | 3 | 12x259 | Rift |
+| 5 | 4 | 12x260 | Parting |
+| 6 | 5 | 12x261 | For My Friend |
+| 7 | 6 | 12x262 | War Begins! |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/anime/naruto-shippuden-set10-disc2.yaml`
+
+### Set 10 Disc 3 — `configs/anime/naruto-shippuden-set10-disc3.yaml` (7 episodes, 12x263–12x269; makemkv titles 0–6) ✅ **Completed 2026-07-08**
+
+Scanned as `Naruto Shippuden 263 - 269` — 7 titles (~23:36 each) at `--minlength=300`. **Plex Season 12** (S12 E21–E27). No play-all or bonus titles exposed by minlength filter. Log: `logs/rip.log`. `stream_defaults`: Japanese audio default, English subs default, keep all tracks. Output: `output/Naruto Shippuden/Season 12/`. NAS: `/mnt/tn-sas/Anime/Naruto Shippuden/Season 12/`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 0 | 12x263 | Sai and Shin |
+| 2 | 1 | 12x264 | Secrets of the Reanimation Jutsu |
+| 3 | 2 | 12x265 | An Old Nemesis Returns |
+| 4 | 3 | 12x266 | The First and Last Opponent |
+| 5 | 4 | 12x267 | The Brilliant Military Advisor of the Hidden Leaf |
+| 6 | 5 | 12x268 | Battleground! |
+| 7 | 6 | 12x269 | Forbidden Words |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/anime/naruto-shippuden-set10-disc3.yaml`
+
+### Set 10 Disc 4 — `configs/anime/naruto-shippuden-set10-disc4.yaml` (7 episodes, 12x270–12x275 + 13x276; makemkv titles 0–6) ✅ **Completed 2026-07-08**
+
+Scanned as `Naruto Shippuden 270 - 276` — 7 titles (~23:36 each) at `--minlength=300`. **Cross-season disc:** episodes 270–275 → **Plex Season 12** (S12 E28–E33); episode 276 → **Plex Season 13** (S13 E01) via `tracks[].season: 13` override. No play-all or bonus titles exposed by minlength filter. Log: `logs/rip.log`. `stream_defaults`: Japanese audio default, English subs default, keep all tracks. Output: `output/Naruto Shippuden/Season 12/` + `Season 13/` (ep 276). NAS: `/mnt/tn-sas/Anime/Naruto Shippuden/Season 12/` + `Season 13/`.
+
+| Slot | MkIdx | File | Episode |
+|------|-------|------|---------|
+| 1 | 0 | 12x270 | Golden Bonds |
+| 2 | 1 | 12x271 | Road to Sakura |
+| 3 | 2 | 12x272 | Mifune vs. Hanzo |
+| 4 | 3 | 12x273 | True Kindness |
+| 5 | 4 | 12x274 | The Complete Ino-Shika-Cho Formation! |
+| 6 | 5 | 12x275 | A Message from the Heart |
+| 7 | 6 | 13x276 | Attack of the Gedo Statue |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/anime/naruto-shippuden-set10-disc4.yaml`
+
+**Set 10 status:** All 4 discs complete — **28** episodes (12x249–12x275 + 13x276) across Plex Seasons 12 and 13. **Blu-ray Set 10 complete.**
+
+## Breaking Bad — Blu-ray (Shows share)
+
+Manifests: `configs/shows/breaking-bad-*.yaml`. Output: `output/Breaking Bad/Season N/`. NAS: `/mnt/tn-sas/Shows/Breaking Bad/Season N/`.
+
+Naming matches other Shows library titles (e.g. House, Game of Thrones): `Breaking Bad - 1x01 - Pilot.mkv` ([TheTVDB official order](https://thetvdb.com/series/breaking-bad/seasons/official/1)).
+
+**Season 1 Blu-ray (2 discs, 7 episodes):** Disc 1 = 1x01–1x04; Disc 2 = 1x05–1x07. **Disc 2 completes Season 1.**
+
+### Season 1 Disc 1 — `configs/shows/breaking-bad-s1-disc1.yaml` (4 episodes, 1x01–1x04; makemkv titles 0–3) ✅ **Completed**
+
+Scanned as `Breaking Bad: Season 1: Disc 1` / volume `BREAKINGBADS1` — 4 titles at `--minlength=300` (durations match Blu-ray.com: Pilot 58:06, others ~48 min). No play-all or extras exposed by minlength. Log: `logs/rip.log`. `stream_defaults`: English audio default, **no** subtitle default (tracks kept), keep all tracks. Output: `output/Breaking Bad/Season 1/`. NAS: `/mnt/tn-sas/Shows/Breaking Bad/Season 1/`.
+
+| Slot | MkIdx | Duration | File | Episode |
+|------|-------|----------|------|---------|
+| 1 | 0 | 0:58:06 | 1x01 | Pilot |
+| 2 | 1 | 0:48:12 | 1x02 | Cat's in the Bag... |
+| 3 | 2 | 0:48:11 | 1x03 | ...And the Bag's in the River |
+| 4 | 3 | 0:48:15 | 1x04 | Cancer Man |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/shows/breaking-bad-s1-disc1.yaml`
+
+### Season 1 Disc 2 — `configs/shows/breaking-bad-s1-disc2.yaml` (3 episodes, 1x05–1x07; makemkv titles 0–2) ✅ **Completed**
+
+Scanned as `Breaking Bad: Season 1: Disc 2` / volume `BREAKINGBADS1` — 3 episode titles (~48 min, ~11.7–11.9 GB) at `--minlength=300` plus shorter extras (titles 3–6; not ripped). Completes Season 1 (7/7). Same `stream_defaults` / post as Disc 1. Log: `logs/rip.log`.
+
+| Slot | MkIdx | Duration | File | Episode |
+|------|-------|----------|------|---------|
+| 1 | 0 | 0:48:11 | 1x05 | Gray Matter |
+| 2 | 1 | 0:48:04 | 1x06 | Crazy Handful of Nothin' |
+| 3 | 2 | 0:47:42 | 1x07 | A No-Rough-Stuff-Type Deal |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/shows/breaking-bad-s1-disc2.yaml`
+
+**Season 1 status:** Complete (7/7 on NAS).
+
+**Season 2 Blu-ray (3 discs, 13 episodes):** Disc 1 = 2x01–2x05; Disc 2 = 2x06–2x09; Disc 3 = 2x10–2x13. Volume label `BREAKINGBADS2`. Physical “Disc 3” in the set is **not** Season 2 Disc 1 — always trust MakeMKV disc name + durations.
+
+### Season 2 Disc 1 — `configs/shows/breaking-bad-s2-disc1.yaml` (5 episodes, 2x01–2x05; makemkv titles 0–4) ✅ **Completed 2026-07-09**
+
+Scanned as `Breaking Bad: Season 2: Disc 1` / volume `BREAKINGBADS2` — 5 episode titles (~47 min, ~8.4–8.7 GB) at `--minlength=300` matching Blu-ray.com Disc 1 (Seven Thirty-Seven / Grilled / Bit by a Dead Bee / Down / Breakage). Title 5 is extra (~15:48; not ripped). Same `stream_defaults` / post as S1. Log: `logs/rip.log`. Output: `output/Breaking Bad/Season 2/`. NAS: `/mnt/tn-sas/Shows/Breaking Bad/Season 2/`.
+
+| Slot | MkIdx | Duration | File | Episode |
+|------|-------|----------|------|---------|
+| 1 | 0 | 0:47:15 | 2x01 | Seven Thirty-Seven |
+| 2 | 1 | 0:47:57 | 2x02 | Grilled |
+| 3 | 2 | 0:46:59 | 2x03 | Bit by a Dead Bee |
+| 4 | 3 | 0:47:24 | 2x04 | Down |
+| 5 | 4 | 0:47:21 | 2x05 | Breakage |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/shows/breaking-bad-s2-disc1.yaml`
+
+### Season 2 Disc 2 — `configs/shows/breaking-bad-s2-disc2.yaml` (4 episodes, 2x06–2x09; makemkv titles 0–3) ✅ **Completed 2026-07-09**
+
+Scanned as `Breaking Bad: Season 2: Disc 2` / volume `BREAKINGBADS2` — 4 episode titles (~47 min, ~10.4 GB) at `--minlength=300` matching Blu-ray.com Disc 2 (Peekaboo / Negro y Azul / Better Call Saul / 4 Days Out). Title 4 is extra (~13:05; not ripped). Same `stream_defaults` / post as S1. Log: `logs/rip.log`. Output: `output/Breaking Bad/Season 2/`. NAS: `/mnt/tn-sas/Shows/Breaking Bad/Season 2/`.
+
+| Slot | MkIdx | Duration | File | Episode |
+|------|-------|----------|------|---------|
+| 1 | 0 | 0:47:22 | 2x06 | Peekaboo |
+| 2 | 1 | 0:47:21 | 2x07 | Negro y Azul |
+| 3 | 2 | 0:47:21 | 2x08 | Better Call Saul |
+| 4 | 3 | 0:47:21 | 2x09 | 4 Days Out |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/shows/breaking-bad-s2-disc2.yaml`
+
+### Season 2 Disc 3 — `configs/shows/breaking-bad-s2-disc3.yaml` (4 episodes, 2x10–2x13; makemkv titles 0–3) ⚠️ **Partial (3/4 on NAS — 2x13 ABQ missing)**
+
+Scanned as `Breaking Bad: Season 2: Disc 3` / volume `BREAKINGBADS2` — 4 episode titles (~47 min, ~8.6–8.7 GB) at `--minlength=300` matching Blu-ray.com Disc 3 (Over / Mandala / Phoenix / ABQ). Titles 4–6 are extras (Cop Talk ~10 min, Webisodes ~23 min, short featurette; not ripped). Same `stream_defaults` / post as S1. Log: `logs/rip.log`. Output: `output/Breaking Bad/Season 2/`. NAS: `/mnt/tn-sas/Shows/Breaking Bad/Season 2/`. **2x10–2x12 on NAS; 2x13 ABQ failed (title 3, no MKV after retries) — re-insert Disc 3 and resume with `--start-at 4`.**
+
+| Slot | MkIdx | Duration | File | Episode |
+|------|-------|----------|------|---------|
+| 1 | 0 | 0:47:22 | 2x10 | Over |
+| 2 | 1 | 0:47:21 | 2x11 | Mandala |
+| 3 | 2 | 0:47:24 | 2x12 | Phoenix |
+| 4 | 3 | 0:47:34 | 2x13 | ABQ |
+
+Resume: `VIDEOSRIPPER_START_AT=4 scripts/videosripper rip configs/shows/breaking-bad-s2-disc3.yaml`
+
+**Season 2 status:** 12/13 on NAS — **2x13 ABQ missing** (Disc 3 slot 4 failed; re-insert S2 Disc 3 and resume with `--start-at 4`).
+
+**Season 3 Blu-ray (3 discs, 13 episodes):** Disc 1 = 3x01–3x05; Disc 2 = 3x06–3x09; Disc 3 = 3x10–3x13. Volume label expected `BREAKINGBADS3` (verify on scan).
+
+### Season 3 Disc 1 — `configs/shows/breaking-bad-s3-disc1.yaml` (5 episodes, 3x01–3x05; makemkv titles 0–4) 🔄 **In progress — Python CLI**
+
+Scanned as `Breaking Bad: Season 3: Disc 1` — 5 episode titles (~47 min, ~8.0–8.6 GB) at `--minlength=300` matching Blu-ray.com Disc 1 (No Más / Caballo Sin Nombre / I.F.T. / Green Light / Más). Title 5 is extra (~7:24; not ripped). Same `stream_defaults` / post as S1/S2. Log: `logs/rip.log`. Output: `output/Breaking Bad/Season 3/`. NAS: `/mnt/tn-sas/Shows/Breaking Bad/Season 3/`.
+
+| Slot | MkIdx | Duration | File | Episode |
+|------|-------|----------|------|---------|
+| 1 | 0 | 0:47:12 | 3x01 | No Más |
+| 2 | 1 | 0:47:12 | 3x02 | Caballo Sin Nombre |
+| 3 | 2 | 0:47:13 | 3x03 | I.F.T. |
+| 4 | 3 | 0:47:13 | 3x04 | Green Light |
+| 5 | 4 | 0:47:13 | 3x05 | Más |
+
+Resume: `VIDEOSRIPPER_START_AT=N scripts/videosripper rip configs/shows/breaking-bad-s3-disc1.yaml`
+
+## Feature films (Movies share)
+
+Manifests: `configs/movies/*.yaml`. Output: `output/Movies/`. NAS: `/mnt/tn-sas/Movies/`.
+
+### Ghost Rider: Spirit of Vengeance — `configs/movies/ghost-rider-spirit-of-vengeance.yaml` ✅ **Completed**
+
+Scanned as `GHOST_RIDER`. Theatrical feature at makemkv title 0 (~24 GB, ~95 min at `--minlength=300`). Use matching minlength for scan and rip.
+
+Resume: `scripts/videosripper rip configs/movies/ghost-rider-spirit-of-vengeance.yaml`
+
+### Scarface (1983) — `configs/movies/scarface-1983.yaml` ✅ **Completed 2026-07-07**
+
+Scanned as `Scarface`. Feature at makemkv **title 1** (2:49:53, 33.97 GB); title 0 (~27 min intro/promo) skipped by `auto_feature` (`min_duration_sec: 4800`). Extras titles 2–11 (~10–38 min each). Log: `logs/rip.log`.
+
+| Idx | Duration | Size | Notes |
+|-----|----------|------|-------|
+| 0 | 0:27:06 | 2.47 GB | intro/promo — skip |
+| 1 | 2:49:53 | 33.97 GB | **feature** (auto_feature) |
+| 2–11 | 0:10–0:38 | 0.3–3.7 GB | extras — skip |
+
+Resume: `scripts/videosripper rip configs/movies/scarface-1983.yaml`
+
+## Common failures
+
+| Symptom | Fix |
+|---------|-----|
+| `VideosRipper venv missing` | `cd /mnt/game1/VideosRipper && python -m venv .venv && .venv/bin/pip install -e .` |
+| No `/dev/sr0` | Run `scripts/fix-optical-drive.sh`; replug USB drive |
+| Manifest validation error | Fix YAML per [schema](#yaml-manifest-schema); run `scripts/videosripper validate` |
+| `mv: No such file or directory` | Ensure `output/Season N/` exists (`mkdir -p`) before rip |
+| NAS copy permission denied | Fix permissions on NAS season folder |
+| Rip killed (exit 143) | Intentional stop; resume with `VIDEOSRIPPER_START_AT` or `--start-at` |
+| Wrong episode names | Re-scan disc; fix manifest `tracks[]`; do not guess from prior disc |
+| Home disk full | Ensure output/staging stay on `/mnt/game1` (1.5 TB free) |
+| Plex wrong episode metadata | Use DVD-order `Nx##` filenames + set Plex episode ordering to **DVD** |
+| Two rips on same drive | Never run parallel `videosripper rip` / `makemkvcon mkv` on `/dev/sr0`; CLI warns `=== ALERT === DUPLICATE MAKEKV` |
+| Disc ejected during scan | Scan/dry-run/validate never eject; successful real `rip` with `post.eject: true` ejects on success; exhausted disc-open/stall retries also eject for inspection — re-insert before re-running |
+| `Failed to open disc` / makemkv exit 11 / TCOUNT:0 | Auto-retries **3 times** (30s delay) by default = 4 total attempts; on exhaustion: `USER INTERVENTION REQUIRED`, auto-eject, exit non-zero — clean/re-seat, re-insert, re-run |
+| Rip hangs (no PRGV, drive LED stuck) | Stall kills makemkv (`--on-stall exit`); default retries same title up to `retry.count` (3); on exhaustion ejects + requires intervention; increase `VIDEOSRIPPER_STALL_TIMEOUT_SEC` for slow BD; resume with `--start-at N` |
+| makemkv subprocess failure | Log shows `=== ALERT === MAKEKV FAILURE — exit N` plus MSG lines in rip.log (also `error.log`); full traceback in `debug.log` and `error.log` |
+| NAS rsync fails | Retries once; then `=== ALERT === NAS COPY FAILED` and **continues** the disc rip (local file kept) |
+| ffmpeg stream_defaults remux fails | Logs WARNING and **keeps original ripped MKV** (episode not aborted) |
+
+### Alert log examples (grep `=== ALERT ===`)
+
+```
+=== ALERT === DUPLICATE MAKEKV — another makemkvcon is using dev:/dev/sr0
+=== ALERT === Failed to open disc (Failed to open disc); Action: after retries exhaust the disc is ejected — ...
+=== ALERT === RETRY 1/3 — disc preflight failed; waiting 30s before retry: ...
+=== ALERT === RETRY 2/3 — disc preflight failed; waiting 30s before retry: ...
+=== ALERT === RETRY 3/3 — disc preflight failed; waiting 30s before retry: ...
+=== ALERT === USER INTERVENTION REQUIRED — disc preflight failed after all retries (3 retries / 4 total attempts)
+=== ALERT === Disc ejected for inspection — re-insert when ready
+=== ALERT === RIP STALL — no progress for 900s during title rip (limit 900s)
+=== ALERT === MAKEKV FAILURE — exit 11
+=== ALERT === MSG: Failed to open disc
+=== ALERT === NAS COPY FAILED — kept local rip; check permissions for ...
+```
+
+Stall behavior: default `--on-stall exit` kills makemkv; with default `retry.count: 3` + `stall_retry: true` the same title is retried up to 3 times after the delay (4 total attempts). Use `--on-stall warn` / `VIDEOSRIPPER_ON_STALL=warn` to log only without killing.
+
+## LLM checklist (copy when starting a session)
+
+- [ ] Read this file; confirm `.venv` installed (`pip install -e .`)
+- [ ] Confirm disc inserted and `/dev/sr0` exists
+- [ ] Scan disc (`scripts/videosripper scan <manifest>` or manual makemkvcon)
+- [ ] Map episodes to TheTVDB DVD numbers; create/update YAML under `configs/`
+- [ ] `scripts/videosripper validate` then `--dry-run` before rip
+- [ ] Ensure `output/Season N/` and `logs/` exist on game drive
+- [ ] `scripts/videosripper rip configs/…yaml` — monitor `logs/rip.log` (`tail -f logs/rip.log`); errors also in `logs/error.log` (`tail -f logs/error.log`)
+- [ ] Verify NAS copies; eject manually or set `post.eject: true` before rip if desired
+- [ ] Update this file’s Season/disc section when a new disc is done
+
+## Do not
+
+- Create new bash rip scripts (use YAML manifests + Python CLI)
+- Install MakeMKV from AUR (use existing `~/.local` install)
+- Rip to home directory or `/tmp` for staging/output
+- Commit secrets (MakeMKV key) to git
+- Force-push or amend git commits unless user asks
+- Skip NAS copy unless user explicitly wants local-only
+- Guess title indices — always scan the inserted disc first

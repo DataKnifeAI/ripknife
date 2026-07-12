@@ -1,0 +1,80 @@
+kind: tv_disc
+meta:
+  id: spongebob-s11-disc1
+  show: SpongeBob SquarePants
+  season: 11
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 11
+  log_file: logs/rip-s11-disc1.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 712.628583
+      outputs:
+        - { episode: "01", title: Cave Dwelling Sponge }
+        - { episode: "02", title: The Clam Whisperer }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 658.491167
+      outputs:
+        - { episode: "03", title: Spot Returns }
+        - { episode: "04", title: The Check-Up }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 657.356700
+      outputs:
+        - { episode: "05", title: Spin the Bottle }
+        - { episode: "06", title: "There's a Sponge in My Soup" }
+  - slot: 4
+    makemkv_title: 3
+    split:
+      at_seconds: 659.408750
+      outputs:
+        - { episode: "07", title: Man Ray Returns }
+        - { episode: "08", title: Larry the Floor Manager }
+  - slot: 5
+    makemkv_title: 4
+    episode: "09"
+    title: The Legend of Boo-Kini Bottom
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 661.360700
+      outputs:
+        - { episode: "10", title: No Pictures Please }
+        - { episode: "11", title: Stuck on the Roof }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 656.522533
+      outputs:
+        - { episode: "12", title: Krabby Patty Creature Feature }
+        - { episode: "13", title: "Teacher's Pests" }
+  - slot: 8
+    makemkv_title: 7
+    split:
+      at_seconds: 661.360700
+      outputs:
+        - { episode: "14", title: Sanitation Insanity }
+        - { episode: "15", title: Bunny Hunt }
+  - slot: 9
+    makemkv_title: 8
+    split:
+      at_seconds: 658.407750
+      outputs:
+        - { episode: "16", title: Squid Noir }
+        - { episode: "17", title: Scavenger Pants }
+skips:
+  - { makemkv_title: 9, reason: play-all (3:18:03) }
+  - { makemkv_title: 10, reason: bonus (~6:49, 409s) }

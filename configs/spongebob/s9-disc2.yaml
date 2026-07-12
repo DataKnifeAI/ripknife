@@ -1,0 +1,67 @@
+kind: tv_disc
+meta:
+  id: spongebob-s9-disc2
+  show: SpongeBob SquarePants
+  season: 9
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Season 9
+  log_file: logs/rip-s9-disc2.log
+nas:
+  share: /mnt/tn-sas/Anime/Spongebob Squarepants
+
+post:
+  eject: true
+  copy_to_nas: true
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    split:
+      at_seconds: 710.609900
+      outputs:
+        - { episode: "14", title: Safe Deposit Krabs }
+        - { episode: "15", title: "Plankton's Pet" }
+  - slot: 2
+    makemkv_title: 1
+    split:
+      at_seconds: 658.324333
+      outputs:
+        - { episode: "16", title: Don't Look Now }
+        - { episode: "17", title: "Séance Shméance" }
+  - slot: 3
+    makemkv_title: 2
+    split:
+      at_seconds: 660.092767
+      outputs:
+        - { episode: "18", title: Kenny the Cat }
+        - { episode: "19", title: Yeti Krabs }
+  - slot: 4
+    makemkv_title: 3
+    episode: "20"
+    title: "SpongeBob You're Fired"
+  - slot: 5
+    makemkv_title: 4
+    split:
+      at_seconds: 646.612633
+      outputs:
+        - { episode: "21", title: Lost in Bikini Bottom }
+        - { episode: "22", title: Tutor Sauce }
+  - slot: 6
+    makemkv_title: 5
+    split:
+      at_seconds: 651.317333
+      outputs:
+        - { episode: "23", title: Squid Plus One }
+        - { episode: "24", title: The Executive Treatment }
+  - slot: 7
+    makemkv_title: 6
+    split:
+      at_seconds: 655.588267
+      outputs:
+        - { episode: "25", title: Company Picnic }
+        - { episode: "26", title: Pull Up a Barrel }
+skips:
+  - { makemkv_title: 7, reason: play-all (2:33:16) }
+  - { makemkv_title: 14, reason: bonus (~5 min, 297s; filtered by minlength) }
+  - { makemkv_title: 16, reason: bonus (~5 min, 297s; filtered by minlength) }
