@@ -12,7 +12,6 @@ LOG_ROOT = Path(os.environ.get("VIDEOSRIPPER_LOGS", ROOT / "logs"))
 NAS_SHARE = Path(
     os.environ.get("VIDEOSRIPPER_NAS", "/mnt/tn-sas/Anime/Spongebob Squarepants")
 )
-SHOWS_NAS = Path(os.environ.get("VIDEOSRIPPER_SHOWS_NAS", "/mnt/tn-sas/Shows"))
 MOVIES_NAS = Path(os.environ.get("VIDEOSRIPPER_MOVIES_NAS", "/mnt/tn-sas/Movies"))
 MAKEMKV_CONF = Path.home() / ".config/environment.d/makemkv.conf"
 MAKEMKV_BIN = Path.home() / ".local/bin/makemkvcon"

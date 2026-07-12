@@ -11,9 +11,6 @@ output:
 nas:
   movies: true
   share: /mnt/tn-sas/Movies
-post:
-  eject: true
-  copy_to_nas: true
 title_selection:
   mode: auto_feature
   min_duration_sec: 4800

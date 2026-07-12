@@ -10,7 +10,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from videosripper.paths import DEFAULT_DEVICE, resolve_path
+from videosripper.paths import DEFAULT_DEVICE
 
 
 class Kind(str, Enum):
@@ -101,16 +101,11 @@ class OutputConfig(BaseModel):
     filename: str | None = None
     log_file: str | None = Field(
         default=None,
-        description="Deprecated; rips append to logs/rip.log",
+        description=(
+            "Deprecated and ignored. Rips append to logs/rip.log (see logging_setup). "
+            "Remove from manifests; field kept for backward-compatible parsing only."
+        ),
     )
-
-    @property
-    def log_path(self) -> Path:
-        from videosripper.paths import LOG_ROOT
-
-        if self.log_file:
-            return resolve_path(self.log_file)
-        return LOG_ROOT / "rip.log"
 
 
 class NasConfig(BaseModel):

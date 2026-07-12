@@ -7,13 +7,9 @@ meta:
   minlength: 300
 output:
   season_dir: Season 8
-  log_file: logs/rip-s8-disc1.log
 nas:
   share: /mnt/tn-sas/Anime/Spongebob Squarepants
 
-post:
-  eject: true
-  copy_to_nas: true
 tracks:
   - { slot: 1, makemkv_title: 1, episode: "01", title: Accidents Will Happen }
   - { slot: 2, makemkv_title: 2, episode: "02", title: The Other Patty }

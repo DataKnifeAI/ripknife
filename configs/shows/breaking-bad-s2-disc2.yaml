@@ -14,9 +14,6 @@ stream_defaults:
   keep_all_tracks: true
   audio_default: eng
   # subtitle_default omitted → clear/disable default subtitle disposition
-post:
-  eject: true
-  copy_to_nas: true
 tracks:
   - slot: 1
     makemkv_title: 0

@@ -44,17 +44,5 @@ def test_default_device_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
         importlib.reload(paths)
 
 
-def test_shows_nas_default() -> None:
-    assert paths.SHOWS_NAS == Path("/mnt/tn-sas/Shows")
-
-
-def test_shows_nas_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("VIDEOSRIPPER_SHOWS_NAS", "/mnt/custom/Shows")
-    import importlib
-
-    importlib.reload(paths)
-    try:
-        assert paths.SHOWS_NAS == Path("/mnt/custom/Shows")
-    finally:
-        monkeypatch.delenv("VIDEOSRIPPER_SHOWS_NAS", raising=False)
-        importlib.reload(paths)
+def test_movies_nas_default() -> None:
+    assert paths.MOVIES_NAS == Path("/mnt/tn-sas/Movies")

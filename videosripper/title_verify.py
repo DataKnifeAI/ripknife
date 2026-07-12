@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from videosripper.makemkv import ScanResult, TitleInfo, scan_to_json
+from videosripper.makemkv import ScanResult, TitleInfo
 from videosripper.models import MovieManifest, TvDiscManifest, TvTrack, ValidationRules
 
 SUSPICIOUS_NAME_RE = re.compile(
@@ -548,7 +548,3 @@ def raise_on_errors(issues: list[TitleIssue]) -> None:
             "Title validation failed — fix manifest mapping or re-scan with matching minlength:\n"
             + format_title_issues(errors)
         )
-
-
-def scan_data_from_result(scan: ScanResult) -> dict:
-    return scan_to_json(scan)
