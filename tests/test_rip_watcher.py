@@ -80,3 +80,42 @@ def test_already_ripped_movie_detects_nas_output(
     nas_path.parent.mkdir(parents=True)
     nas_path.write_bytes(b"x" * 200)
     assert rip_watcher.already_ripped(manifest) is True
+
+
+def test_rescan_manifest_uses_direct_scan(
+    rip_watcher, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from videosripper.makemkv import ScanResult, TitleInfo
+    from videosripper.models import MovieManifest
+
+    manifest = MovieManifest.model_validate(
+        {
+            "kind": "movie",
+            "meta": {
+                "id": "john-wick",
+                "title": "John Wick",
+                "device": "dev:/dev/sr0",
+                "minlength": 300,
+            },
+            "output": {"dir": "Movies", "filename": "John Wick.mkv"},
+            "validation": {"min_duration_sec": 1, "min_size_bytes": 100},
+        }
+    )
+    titles = {
+        i: TitleInfo(index=i, duration="2:01:00", duration_sec=7260, name=f"Title {i}")
+        for i in range(330)
+    }
+
+    def fake_scan(device: str, minlength: int = 300, *, timeout_sec: int | None = None) -> ScanResult:
+        return ScanResult(raw="", disc_name="John Wick", titles=titles)
+
+    monkeypatch.setattr("videosripper.makemkv.scan", fake_scan)
+
+    class _Logger:
+        def error(self, *_args, **_kwargs) -> None:
+            pass
+
+    data = rip_watcher.rescan_manifest(manifest, _Logger())
+    assert data is not None
+    assert data["disc_name"] == "John Wick"
+    assert len(data["titles"]) == 330

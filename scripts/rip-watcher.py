@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import subprocess
 import sys
@@ -28,6 +27,7 @@ from videosripper.title_verify import format_title_issues, validate_manifest_tit
 from videosripper.watcher_util import (  # noqa: E402
     flock,
     makemkv_lock_path,
+    scan_device_dict,
     setup_watcher_logger,
     update_state,
     watcher_lock_path,
@@ -64,13 +64,11 @@ def validate_manifest(yaml_path: Path, logger) -> bool:
 def rescan_manifest(manifest: TvDiscManifest | MovieManifest, logger) -> dict | None:
     device = manifest.meta.device
     minlength = manifest.meta.minlength
-    code, output = _run_cli(
-        ["scan-device", "--json", "--device", device, "--minlength", str(minlength)]
-    )
-    if code != 0:
-        logger.error("Re-scan failed: %s", output.strip())
+    try:
+        return scan_device_dict(device, minlength)
+    except Exception as exc:
+        logger.error("Re-scan failed: %s", exc)
         return None
-    return json.loads(output)
 
 
 def verify_match(

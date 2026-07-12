@@ -21,6 +21,7 @@ from videosripper.watcher_util import (  # noqa: E402
     DEFAULT_DEVICE,
     flock,
     media_present,
+    scan_device_dict,
     scan_lock_path,
     setup_watcher_logger,
     slugify_disc_id,
@@ -70,12 +71,12 @@ def trigger_mapping(disc_id: str, scan_json: Path, logger) -> None:
 def handle_disc(args: argparse.Namespace, logger) -> None:
     try:
         with flock(scan_lock_path(), blocking=False):
-            code, output = _scan_device_json(args.device, args.minlength)
-            if code != 0:
-                logger.error("Pre-scan failed: %s", output.strip())
+            try:
+                scan_data = scan_device_dict(args.device, args.minlength)
+            except Exception as exc:
+                logger.error("Pre-scan failed: %s", exc)
                 update_state("disc_watcher", {"status": "scan_failed"})
                 return
-            scan_data = json.loads(output)
             disc_name = scan_data.get("disc_name", "") or "unknown-disc"
             disc_id = slugify_disc_id(disc_name)
 
@@ -99,7 +100,7 @@ def handle_disc(args: argparse.Namespace, logger) -> None:
             scan_json = PENDING_DIR / f"{disc_id}.scan.json"
             meta_json = PENDING_DIR / f"{disc_id}.meta.json"
             PENDING_DIR.mkdir(parents=True, exist_ok=True)
-            scan_json.write_text(output, encoding="utf-8")
+            scan_json.write_text(json.dumps(scan_data, indent=2) + "\n", encoding="utf-8")
             meta = {
                 "id": disc_id,
                 "disc_name": disc_name,
@@ -154,20 +155,6 @@ def handle_disc(args: argparse.Namespace, logger) -> None:
     except BlockingIOError:
         logger.warning("Scan lock busy; skipping this cycle")
         update_state("disc_watcher", {"status": "scan_busy"})
-
-
-def _scan_device_json(device: str, minlength: int) -> tuple[int, str]:
-    cmd = [
-        str(PKG_ROOT / "scripts" / "videosripper"),
-        "scan-device",
-        "--json",
-        "--device",
-        device,
-        "--minlength",
-        str(minlength),
-    ]
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=PKG_ROOT, check=False)
-    return proc.returncode, proc.stdout if proc.returncode == 0 else proc.stdout + proc.stderr
 
 
 def _poll_loop(args: argparse.Namespace, logger) -> int:

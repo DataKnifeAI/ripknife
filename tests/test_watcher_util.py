@@ -83,3 +83,31 @@ def test_scan_lock_path_matches_makemkv_lock(
     monkeypatch.setattr(watcher_util, "_resolved_lock_paths", {})
     monkeypatch.setattr(watcher_util.os, "access", lambda _path, _mode: False)
     assert watcher_util.scan_lock_path() == watcher_util.makemkv_lock_path()
+
+
+def test_scan_device_dict_returns_large_scan_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+    from videosripper.makemkv import ScanResult, TitleInfo
+
+    titles = {
+        i: TitleInfo(
+            index=i,
+            duration="2:01:00",
+            duration_sec=7260,
+            size_bytes=30_000_000_000 + i,
+            name=f"Title {i}",
+        )
+        for i in range(330)
+    }
+
+    def fake_scan(device: str, minlength: int = 300, *, timeout_sec: int | None = None) -> ScanResult:
+        assert device == "dev:/dev/sr0"
+        assert minlength == 300
+        return ScanResult(raw="", disc_name="John Wick", titles=titles)
+
+    monkeypatch.setattr("videosripper.makemkv.scan", fake_scan)
+
+    data = watcher_util.scan_device_dict("dev:/dev/sr0", 300)
+    assert data["disc_name"] == "John Wick"
+    assert len(data["titles"]) == 330
+    assert data["titles"][0]["index"] == 0
+    assert data["titles"][-1]["index"] == 329

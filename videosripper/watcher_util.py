@@ -166,6 +166,13 @@ def run_videosripper(args: list[str], *, logger: logging.Logger) -> tuple[int, s
     return proc.returncode, output
 
 
+def scan_device_dict(device: str, minlength: int = 300) -> dict:
+    """Scan disc via MakeMKV Python API; return JSON-serializable summary."""
+    from videosripper.makemkv import scan, scan_to_json
+
+    return scan_to_json(scan(device, minlength))
+
+
 def wait_for_stable_media(
     *,
     device: str,
