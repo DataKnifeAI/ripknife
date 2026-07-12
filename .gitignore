@@ -41,3 +41,14 @@ output/
 # Editor
 .idea/
 .vscode/
+
+# Pytest basetemp / local test dirs (not source under tests/)
+.pytest-tmp/
+pytest-of-*/
+
+# Process / shell spill (watchers, manual runs)
+nohup.out
+nohup*.log
+
+# Cursor local project state
+.cursor/
