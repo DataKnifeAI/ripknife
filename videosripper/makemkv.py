@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import subprocess
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,10 +30,35 @@ logger = logging.getLogger("videosripper")
 
 _SELECTION_KEY = "app_DefaultSelectionString"
 
-_DURATION_RE = re.compile(r'^TINFO:(\d+),9,0,"([^"]+)"')
-_SIZE_RE = re.compile(r'^TINFO:(\d+),11,0,"(\d+)"')
-_NAME_RE = re.compile(r'^TINFO:(\d+),2,0,"([^"]+)"')
-_DISC_RE = re.compile(r'^CINFO:2,0,"([^"]+)"')
+_TINFO_RE = re.compile(r'^TINFO:(\d+),(\d+),0,"([^"]+)"')
+_CINFO_DISC_RE = re.compile(r'^CINFO:2,0,"([^"]+)"')
+
+_SCAN_LINE_WARNINGS: list[tuple[str, str]] = [
+    (
+        "requires Java runtime (JRE), but none was found",
+        "Java JRE not found (BD-Java discs need Java)",
+    ),
+]
+
+
+def _set_title_name(info: TitleInfo, value: str) -> None:
+    info.name = value
+
+
+def _set_title_duration(info: TitleInfo, value: str) -> None:
+    info.duration = value
+    info.duration_sec = duration_to_seconds(value)
+
+
+def _set_title_size(info: TitleInfo, value: str) -> None:
+    info.size_bytes = int(value)
+
+
+_TINFO_FIELD_HANDLERS: dict[int, Callable[[TitleInfo, str], None]] = {
+    2: _set_title_name,
+    9: _set_title_duration,
+    11: _set_title_size,
+}
 
 
 @dataclass
@@ -129,24 +155,19 @@ def makemkv_selection_profile(selection: str | None):
 def parse_scan_output(raw: str) -> ScanResult:
     result = ScanResult(raw=raw)
     for line in raw.splitlines():
-        if m := _DISC_RE.match(line):
+        if m := _CINFO_DISC_RE.match(line):
             result.disc_name = m.group(1)
-        elif m := _DURATION_RE.match(line):
+            continue
+        if m := _TINFO_RE.match(line):
             idx = int(m.group(1))
-            dur = m.group(2)
-            info = result.titles.setdefault(idx, TitleInfo(index=idx))
-            info.duration = dur
-            info.duration_sec = duration_to_seconds(dur)
-        elif m := _SIZE_RE.match(line):
-            idx = int(m.group(1))
-            info = result.titles.setdefault(idx, TitleInfo(index=idx))
-            info.size_bytes = int(m.group(2))
-        elif m := _NAME_RE.match(line):
-            idx = int(m.group(1))
-            info = result.titles.setdefault(idx, TitleInfo(index=idx))
-            info.name = m.group(2)
-        elif "requires Java runtime (JRE), but none was found" in line:
-            result.warnings.append("Java JRE not found (BD-Java discs need Java)")
+            if handler := _TINFO_FIELD_HANDLERS.get(int(m.group(2))):
+                info = result.titles.setdefault(idx, TitleInfo(index=idx))
+                handler(info, m.group(3))
+            continue
+        for needle, message in _SCAN_LINE_WARNINGS:
+            if needle in line:
+                result.warnings.append(message)
+                break
     return result
 
 

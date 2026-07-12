@@ -8,6 +8,7 @@ import re
 import subprocess
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -376,12 +377,21 @@ class RipWatchdog:
             self._stop.wait(wait)
 
 
+def _is_prgv_line(stripped: str) -> bool:
+    return bool(_PRGV_RE.match(stripped))
+
+
+def _is_save_titles_line(stripped: str) -> bool:
+    return "Saving " in stripped and "titles into directory" in stripped
+
+
+_PROGRESS_LINE_CHECKS: tuple[Callable[[str], bool], ...] = (
+    _is_prgv_line,
+    lambda s: s.startswith("MSG:5014"),
+    _is_save_titles_line,
+)
+
+
 def is_progress_line(line: str) -> bool:
     stripped = line.strip()
-    if _PRGV_RE.match(stripped):
-        return True
-    if stripped.startswith("MSG:5014"):
-        return True
-    if "Saving " in stripped and "titles into directory" in stripped:
-        return True
-    return False
+    return any(check(stripped) for check in _PROGRESS_LINE_CHECKS)

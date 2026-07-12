@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from videosripper.makemkv import ScanResult, TitleInfo, scan_to_json
-from videosripper.models import MovieManifest, TvDiscManifest, TvTrack
+from videosripper.models import MovieManifest, TvDiscManifest, TvTrack, ValidationRules
 
 SUSPICIOUS_NAME_RE = re.compile(
     r"\b("
@@ -68,6 +69,39 @@ def titles_from_scan_json(scan_data: dict) -> dict[int, TitleInfo]:
 
 def titles_from_scan_result(scan: ScanResult) -> dict[int, TitleInfo]:
     return dict(scan.titles)
+
+
+def _resolve_titles(scan_data: dict | ScanResult) -> dict[int, TitleInfo]:
+    if isinstance(scan_data, ScanResult):
+        return titles_from_scan_result(scan_data)
+    return titles_from_scan_json(scan_data)
+
+
+def _later_title_hint(
+    alt_idx: int,
+    alt_info: TitleInfo,
+    *,
+    include_size: bool = False,
+) -> str:
+    if include_size:
+        detail = f"{alt_info.duration}, {alt_info.size_bytes} bytes, {alt_info.name!r}"
+    else:
+        detail = f"{alt_info.duration}, {alt_info.name!r}"
+    return f"check later title {alt_idx} ({detail})"
+
+
+def _rejected_title_issue(
+    subject: str,
+    reason: str,
+    alt: tuple[int, TitleInfo] | None,
+    *,
+    include_size: bool = False,
+) -> TitleIssue:
+    msg = f"{subject} rejected ({reason})"
+    if alt:
+        alt_idx, alt_info = alt
+        msg += f"; {_later_title_hint(alt_idx, alt_info, include_size=include_size)}"
+    return TitleIssue("error", msg)
 
 
 def _duration_clusters(titles: dict[int, TitleInfo]) -> list[tuple[int, list[int]]]:
@@ -202,95 +236,92 @@ def scan_title_hints(titles: dict[int, TitleInfo], *, minlength: int) -> dict[in
 
 
 def _track_label(track: TvTrack) -> str:
-    if track.split:
-        return f"slot {track.slot} (split)"
-    if track.extract_chapter:
-        return f"slot {track.slot} (chapter extract)"
-    return f"slot {track.slot}"
+    match (track.split, track.extract_chapter):
+        case (True, _):
+            return f"slot {track.slot} (split)"
+        case (_, True):
+            return f"slot {track.slot} (chapter extract)"
+        case _:
+            return f"slot {track.slot}"
+
+
+def _validate_tv_track(
+    track: TvTrack,
+    titles: dict[int, TitleInfo],
+    minlength: int,
+) -> list[TitleIssue]:
+    idx = track.makemkv_title
+    label = _track_label(track)
+    info = titles.get(idx)
+    if info is None:
+        available = ", ".join(str(i) for i in sorted(titles))
+        return [
+            TitleIssue(
+                "error",
+                f"{label}: makemkv_title {idx} missing from scan "
+                f"({len(titles)} titles: {available or 'none'})",
+            )
+        ]
+
+    reason = title_suspicion(info, minlength=minlength)
+    if reason:
+        return [
+            _rejected_title_issue(
+                f"{label}: title {idx}",
+                reason,
+                later_title_candidate(titles, idx, minlength=minlength),
+            )
+        ]
+
+    if track.split or track.extract_chapter or info.duration_sec >= _MIN_EPISODE_SEC:
+        return []
+
+    alt = later_title_candidate(titles, idx, minlength=minlength)
+    msg = (
+        f"{label}: title {idx} duration {info.duration} "
+        f"({info.duration_sec}s) is short for a standalone episode"
+    )
+    if alt:
+        alt_idx, alt_info = alt
+        msg += f"; {_later_title_hint(alt_idx, alt_info)}"
+    return [TitleIssue("error", msg)]
+
+
+def _validate_tv_skip(
+    skip,
+    titles: dict[int, TitleInfo],
+    minlength: int,
+) -> TitleIssue | None:
+    if skip.makemkv_title not in titles:
+        return TitleIssue(
+            "warn",
+            f"skip documents makemkv_title {skip.makemkv_title} "
+            f"but it is not in scan (minlength filter?)",
+        )
+    skip_info = titles[skip.makemkv_title]
+    if not title_suspicion(skip_info, minlength=minlength) and skip_info.duration_sec >= 3600:
+        return TitleIssue(
+            "warn",
+            f"skip title {skip.makemkv_title} is long "
+            f"({skip_info.duration}) — confirm play-all/extra, not episode",
+        )
+    return None
 
 
 def validate_tv_tracks(
     manifest: TvDiscManifest,
     scan_data: dict | ScanResult,
 ) -> list[TitleIssue]:
-    titles = (
-        titles_from_scan_result(scan_data)
-        if isinstance(scan_data, ScanResult)
-        else titles_from_scan_json(scan_data)
-    )
+    titles = _resolve_titles(scan_data)
     minlength = manifest.meta.minlength
     issues: list[TitleIssue] = []
 
     for track in manifest.tracks:
-        idx = track.makemkv_title
-        label = _track_label(track)
-        info = titles.get(idx)
-        if info is None:
-            available = ", ".join(str(i) for i in sorted(titles))
-            issues.append(
-                TitleIssue(
-                    "error",
-                    f"{label}: makemkv_title {idx} missing from scan "
-                    f"({len(titles)} titles: {available or 'none'})",
-                )
-            )
-            continue
-
-        reason = title_suspicion(info, minlength=minlength)
-        if reason:
-            alt = later_title_candidate(titles, idx, minlength=minlength)
-            if alt:
-                alt_idx, alt_info = alt
-                issues.append(
-                    TitleIssue(
-                        "error",
-                        f"{label}: title {idx} rejected ({reason}); "
-                        f"check later title {alt_idx} "
-                        f"({alt_info.duration}, {alt_info.name!r})",
-                    )
-                )
-            else:
-                issues.append(
-                    TitleIssue(
-                        "error",
-                        f"{label}: title {idx} rejected ({reason})",
-                    )
-                )
-            continue
-
-        if not track.split and not track.extract_chapter and info.duration_sec < _MIN_EPISODE_SEC:
-            alt = later_title_candidate(titles, idx, minlength=minlength)
-            msg = (
-                f"{label}: title {idx} duration {info.duration} "
-                f"({info.duration_sec}s) is short for a standalone episode"
-            )
-            if alt:
-                alt_idx, alt_info = alt
-                msg += (
-                    f"; check later title {alt_idx} "
-                    f"({alt_info.duration}, {alt_info.name!r})"
-                )
-            issues.append(TitleIssue("error", msg))
+        issues.extend(_validate_tv_track(track, titles, minlength))
 
     for skip in manifest.skips:
-        if skip.makemkv_title not in titles:
-            issues.append(
-                TitleIssue(
-                    "warn",
-                    f"skip documents makemkv_title {skip.makemkv_title} "
-                    f"but it is not in scan (minlength filter?)",
-                )
-            )
-        else:
-            skip_info = titles[skip.makemkv_title]
-            if not title_suspicion(skip_info, minlength=minlength) and skip_info.duration_sec >= 3600:
-                issues.append(
-                    TitleIssue(
-                        "warn",
-                        f"skip title {skip.makemkv_title} is long "
-                        f"({skip_info.duration}) — confirm play-all/extra, not episode",
-                    )
-                )
+        if issue := _validate_tv_skip(skip, titles, minlength):
+            issues.append(issue)
 
     return issues
 
@@ -335,25 +366,21 @@ def _obfuscation_movie_issues(
 
     if title_idx not in obf.cluster_indices:
         delta = abs(info.duration_sec - obf.dominant_duration_sec)
-        if delta > _DURATION_OUTLIER_SEC:
-            issues.append(
-                TitleIssue(
-                    "error",
-                    f"movie title {title_idx} duration {info.duration} "
-                    f"outside dominant cluster "
-                    f"({obf.dominant_duration_sec}s, {obf.duplicate_count} duplicates)"
-                    f"{rec_hint}",
-                )
+        level = "error" if delta > _DURATION_OUTLIER_SEC else "warn"
+        if level == "error":
+            msg = (
+                f"movie title {title_idx} duration {info.duration} "
+                f"outside dominant cluster "
+                f"({obf.dominant_duration_sec}s, {obf.duplicate_count} duplicates)"
+                f"{rec_hint}"
             )
         else:
-            issues.append(
-                TitleIssue(
-                    "warn",
-                    f"movie title {title_idx} duration {info.duration} "
-                    f"differs from dominant cluster mode "
-                    f"({obf.dominant_duration_sec}s){rec_hint}",
-                )
+            msg = (
+                f"movie title {title_idx} duration {info.duration} "
+                f"differs from dominant cluster mode "
+                f"({obf.dominant_duration_sec}s){rec_hint}"
             )
+        issues.append(TitleIssue(level, msg))
     elif selection_mode == "fixed" and rec is not None and title_idx != rec:
         issues.append(
             TitleIssue(
@@ -366,15 +393,76 @@ def _obfuscation_movie_issues(
     return issues
 
 
+def _movie_min_duration_issue(
+    info: TitleInfo,
+    title_idx: int,
+    rules: ValidationRules,
+) -> TitleIssue | None:
+    if info.duration_sec < rules.min_duration_sec:
+        return TitleIssue(
+            "error",
+            f"movie title {title_idx} duration {info.duration} "
+            f"< required {rules.min_duration_sec // 60} min",
+        )
+    return None
+
+
+def _movie_min_size_issue(
+    info: TitleInfo,
+    title_idx: int,
+    rules: ValidationRules,
+) -> TitleIssue | None:
+    if info.size_bytes and info.size_bytes < rules.min_size_bytes:
+        return TitleIssue(
+            "error",
+            f"movie title {title_idx} size {info.size_bytes} bytes "
+            f"< required {rules.min_size_bytes}",
+        )
+    return None
+
+
+_MOVIE_SCAN_RULES: tuple[
+    Callable[[TitleInfo, int, ValidationRules], TitleIssue | None],
+    ...,
+] = (
+    _movie_min_duration_issue,
+    _movie_min_size_issue,
+)
+
+
+def _movie_fixed_title_longer_later_issue(
+    title_idx: int,
+    info: TitleInfo,
+    titles: dict[int, TitleInfo],
+    manifest: MovieManifest,
+    minlength: int,
+) -> TitleIssue | None:
+    sel = manifest.title_selection
+    if sel.mode != "fixed":
+        return None
+    longer_later = [
+        (i, t)
+        for i, t in sorted(titles.items())
+        if i > title_idx
+        and t.duration_sec > info.duration_sec
+        and t.duration_sec >= sel.min_duration_sec
+        and not title_suspicion(t, minlength=minlength)
+    ]
+    if not longer_later:
+        return None
+    alt_idx, alt_info = longer_later[0]
+    return TitleIssue(
+        "error",
+        f"fixed title {title_idx} ({info.duration}) but later title {alt_idx} "
+        f"is longer ({alt_info.duration}) — likely wrong feature",
+    )
+
+
 def validate_movie_title(
     manifest: MovieManifest,
     scan_data: dict | ScanResult,
 ) -> list[TitleIssue]:
-    titles = (
-        titles_from_scan_result(scan_data)
-        if isinstance(scan_data, ScanResult)
-        else titles_from_scan_json(scan_data)
-    )
+    titles = _resolve_titles(scan_data)
     minlength = manifest.meta.minlength
     issues: list[TitleIssue] = []
     obf = analyze_obfuscation(titles)
@@ -406,63 +494,30 @@ def validate_movie_title(
 
     reason = title_suspicion(info, minlength=minlength)
     if reason:
-        alt = later_title_candidate(
-            titles,
-            title_idx,
-            minlength=minlength,
-            min_duration_sec=manifest.title_selection.min_duration_sec,
-        )
-        if alt:
-            alt_idx, alt_info = alt
-            issues.append(
-                TitleIssue(
-                    "error",
-                    f"movie title {title_idx} rejected ({reason}); "
-                    f"check later title {alt_idx} "
-                    f"({alt_info.duration}, {alt_info.size_bytes} bytes, {alt_info.name!r})",
-                )
+        issues.append(
+            _rejected_title_issue(
+                f"movie title {title_idx}",
+                reason,
+                later_title_candidate(
+                    titles,
+                    title_idx,
+                    minlength=minlength,
+                    min_duration_sec=manifest.title_selection.min_duration_sec,
+                ),
+                include_size=True,
             )
-        else:
-            issues.append(TitleIssue("error", f"movie title {title_idx} rejected ({reason})"))
+        )
         return issues
 
     rules = manifest.validation
-    if info.duration_sec < rules.min_duration_sec:
-        issues.append(
-            TitleIssue(
-                "error",
-                f"movie title {title_idx} duration {info.duration} "
-                f"< required {rules.min_duration_sec // 60} min",
-            )
-        )
-    if info.size_bytes and info.size_bytes < rules.min_size_bytes:
-        issues.append(
-            TitleIssue(
-                "error",
-                f"movie title {title_idx} size {info.size_bytes} bytes "
-                f"< required {rules.min_size_bytes}",
-            )
-        )
+    for rule in _MOVIE_SCAN_RULES:
+        if issue := rule(info, title_idx, rules):
+            issues.append(issue)
 
-    sel = manifest.title_selection
-    if sel.mode == "fixed":
-        longer_later = [
-            (i, t)
-            for i, t in sorted(titles.items())
-            if i > title_idx
-            and t.duration_sec > info.duration_sec
-            and t.duration_sec >= sel.min_duration_sec
-            and not title_suspicion(t, minlength=minlength)
-        ]
-        if longer_later:
-            alt_idx, alt_info = longer_later[0]
-            issues.append(
-                TitleIssue(
-                    "error",
-                    f"fixed title {title_idx} ({info.duration}) but later title {alt_idx} "
-                    f"is longer ({alt_info.duration}) — likely wrong feature",
-                )
-            )
+    if issue := _movie_fixed_title_longer_later_issue(
+        title_idx, info, titles, manifest, minlength
+    ):
+        issues.append(issue)
 
     return issues
 
