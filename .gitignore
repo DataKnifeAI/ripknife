@@ -9,12 +9,16 @@ __pycache__/
 dist/
 build/
 
-# Local runtime
+# Local runtime (rips, logs, locks)
 logs/
 output/
 .tmp/
+*.log
+*.mkv
+*.lock
 
-# Staging workspace (queue skeleton only; no rips or scan artifacts)
+# Staging workflow artifacts (not configs/*.yaml or LLM-RIP-WORKFLOW.md)
+# Ignores pending/*.json, ready/*.yaml, done/*, failed/*, .probe*/.rip.*, etc.
 /staging/**
 !/staging/pending/
 !/staging/ready/
