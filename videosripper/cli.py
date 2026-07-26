@@ -439,6 +439,77 @@ def rip_cmd(
         raise typer.Exit(code=1) from exc
 
 
+@app.command("identify")
+def identify_cmd(
+    device: Annotated[
+        Optional[str],
+        typer.Option("--device", help="MakeMKV device (default: env or dev:/dev/sr0)"),
+    ] = None,
+    minlength: Annotated[
+        int,
+        typer.Option("--minlength", help="Minimum title length in seconds"),
+    ] = 300,
+    scan_json: Annotated[
+        Optional[Path],
+        typer.Option("--scan-json", help="Use existing scan JSON instead of scanning"),
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="Emit identification JSON")] = False,
+    no_mount: Annotated[
+        bool,
+        typer.Option("--no-mount", help="Skip Blu-ray bdmt mount/parse"),
+    ] = False,
+    no_lookup: Annotated[
+        bool,
+        typer.Option("--no-lookup", help="Skip TMDb/OMDb runtime lookup"),
+    ] = False,
+) -> None:
+    """Identify a disc: bdmt XML title + runtime DB candidates for generic labels."""
+    from videosripper.identify import gather_identification_hints
+    from videosripper.makemkv import scan, scan_to_json
+
+    target = device or os.environ.get("VIDEOSRIPPER_DEVICE", "dev:/dev/sr0")
+    if scan_json is not None:
+        if not scan_json.is_file():
+            console.print(f"[red]Scan JSON not found:[/red] {scan_json}")
+            raise typer.Exit(code=1)
+        scan_data = json.loads(scan_json.read_text(encoding="utf-8"))
+    else:
+        try:
+            scan_data = scan_to_json(scan(target, minlength))
+        except Exception as exc:
+            console.print(f"[red]Scan failed:[/red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+    hints = gather_identification_hints(
+        scan_data,
+        device=None if no_mount else target,
+        try_bluray_mount=not no_mount,
+        try_runtime_lookup=not no_lookup,
+    )
+    payload = {
+        "disc_name": scan_data.get("disc_name"),
+        "identification": hints.to_dict(),
+        "best_title": hints.best_title(),
+    }
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2))
+        return
+    console.print(f"Disc label: {scan_data.get('disc_name') or '(unknown)'}")
+    console.print(f"Generic label: {hints.is_generic_label}")
+    if hints.feature_duration_sec:
+        console.print(f"Feature duration: {hints.feature_duration_sec}s")
+    if hints.bluray_title:
+        console.print(f"[green]Blu-ray bdmt title:[/green] {hints.bluray_title}")
+    if hints.candidates:
+        console.print("Runtime candidates:")
+        for c in hints.candidates:
+            console.print(f"  - {c.display()} [{c.source}]")
+    if hints.best_title():
+        console.print(f"[bold]Best guess:[/bold] {hints.best_title()}")
+    for note in hints.notes:
+        console.print(f"[dim]{note}[/dim]")
+
+
 def main() -> None:
     app()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -13,6 +14,7 @@ RIP_LOG = LOG_ROOT / "rip.log"
 DEBUG_LOG = LOG_ROOT / "debug.log"
 SCAN_LOG = LOG_ROOT / "scan.log"
 ERROR_LOG = LOG_ROOT / "error.log"
+PIPELINE_LOG = LOG_ROOT / "pipeline.log"
 
 MAX_LOG_LINES = 50_000
 BACKUP_COUNT = 2
@@ -20,6 +22,7 @@ BACKUP_COUNT = 2
 _LOGGER_NAME = "videosripper"
 _DEBUG_LOGGER_NAME = "videosripper.debug"
 _SCAN_LOGGER_NAME = "videosripper.scan"
+_PIPELINE_LOGGER_NAME = "videosripper.pipeline"
 
 _SHARED_ERROR_ATTR = "_videosripper_shared_error"
 _error_handler = None  # set to _LineRotatingFileHandler after first use
@@ -247,3 +250,127 @@ def log_exception(exc: BaseException, *, user_message: str | None = None) -> Non
     tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip()
     debug.error("Traceback for: %s", msg)
     debug.error("%s", tb)
+
+
+def setup_pipeline_logger() -> logging.Logger:
+    """Configure append-mode pipeline.log for high-level stage progress."""
+    logger = logging.getLogger(_PIPELINE_LOGGER_NAME)
+    if logger.handlers:
+        return logger
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    fmt = logging.Formatter("%(asctime)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    file_handler = _LineRotatingFileHandler(PIPELINE_LOG)
+    file_handler.setFormatter(fmt)
+    logger.addHandler(file_handler)
+    console_handler = _ConsoleHandler()
+    console_handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(console_handler)
+    _attach_error_handler(logger)
+    return logger
+
+
+# Monotonic time of the previous log_stage call in this process (None = no stage yet).
+_last_stage_monotonic: float | None = None
+
+
+def _format_elapsed(seconds: float) -> str:
+    """Render an elapsed duration compactly, e.g. ``42s``, ``3m07s``, ``1h02m09s``."""
+    total = int(round(seconds))
+    if total < 60:
+        return f"{total}s"
+    minutes, secs = divmod(total, 60)
+    if minutes < 60:
+        return f"{minutes}m{secs:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m{secs:02d}s"
+
+
+# Named pipelines so ``[1/5]`` is never ambiguous across Process 1 vs Process 2.
+PROCESS_INSERT = "insert"  # disc-watcher: scan → pending → registry/map
+PROCESS_RIP = "rip"  # rip-watcher: validate/claim → rescan → verify → rip → done
+INSERT_STEPS = 5
+RIP_STEPS = 5
+
+
+def log_watcher_waiting(watcher: str, devices: list[str] | None = None) -> None:
+    """Startup marker → pipeline.log so ``tail -F`` works before the first disc.
+
+    Example: ``log_watcher_waiting("disc-watcher", ["dev:/dev/sr0"])``
+    → ``=== STAGE WATCHERS_UP — disc-watcher waiting (devices=dev:/dev/sr0) ===``
+
+    Idle/status stages omit ``[process N/M]`` — they are outside the numbered pipelines.
+    """
+    scope = f"devices={', '.join(devices)}" if devices else "staging/ready"
+    log_stage("WATCHERS_UP", detail=f"{watcher} waiting ({scope})")
+
+
+def log_stage(
+    stage: str,
+    *,
+    process: str | None = None,
+    step: int | None = None,
+    total: int | None = None,
+    detail: str = "",
+) -> None:
+    """High-level pipeline stage marker → pipeline.log (+ console).
+
+    Numbered stages must pass ``process`` so insert vs rip are unambiguous:
+
+    ``log_stage("SCAN", process="insert", step=1, total=5, detail="device=…")``
+    → ``=== STAGE [insert 1/5] SCAN — device=… === [+37s]``
+
+    ``log_stage("RIP", process="rip", step=4, total=5, detail="…")``
+    → ``=== STAGE [rip 4/5] RIP — … ===``
+
+    Status-only stages (WATCHERS_UP, IDLE, WAITING_MANIFEST, DISC_DETECTED) omit
+    ``process`` / step — they are outside the numbered insert/rip pipelines.
+
+    Failures inside a pipeline pass ``process`` without step:
+    → ``=== STAGE [insert] SCAN_FAILED — … ===``
+
+    File lines are timestamped by the pipeline formatter; the trailing
+    ``[+…]`` is the elapsed time since the previous stage in this process.
+    """
+    global _last_stage_monotonic
+    setup_pipeline_logger()
+    now = time.monotonic()
+    elapsed = "" if _last_stage_monotonic is None else f" [+{_format_elapsed(now - _last_stage_monotonic)}]"
+    _last_stage_monotonic = now
+    if step is not None and total is not None:
+        bracket = f"{process} {step}/{total}" if process else f"{step}/{total}"
+        prefix = f"=== STAGE [{bracket}] {stage}"
+    elif process:
+        prefix = f"=== STAGE [{process}] {stage}"
+    else:
+        prefix = f"=== STAGE {stage}"
+    msg = f"{prefix} — {detail} ==={elapsed}" if detail else f"{prefix} ==={elapsed}"
+    logging.getLogger(_PIPELINE_LOGGER_NAME).info("%s", msg)
+    # Mirror highlights into rip.log when a rip session is active
+    rip = logging.getLogger(_LOGGER_NAME)
+    if rip.handlers:
+        rip.info("%s", msg)
+
+
+def log_progress(
+    stage: str,
+    current: int,
+    total: int,
+    *,
+    process: str | None = None,
+    detail: str = "",
+) -> None:
+    """In-stage progress → pipeline.log (+ console).
+
+    Example: ``log_progress("RIP", 2, 12, process="rip", detail="6x22 The Card")``
+    → ``  progress [rip] RIP 2/12 (17%) — 6x22 The Card``
+    """
+    setup_pipeline_logger()
+    pct = int(100 * current / total) if total else 0
+    suffix = f" — {detail}" if detail else ""
+    tag = f"[{process}] " if process else ""
+    msg = f"  progress {tag}{stage} {current}/{total} ({pct}%){suffix}"
+    logging.getLogger(_PIPELINE_LOGGER_NAME).info("%s", msg)
+    rip = logging.getLogger(_LOGGER_NAME)
+    if rip.handlers:
+        rip.info("%s", msg)

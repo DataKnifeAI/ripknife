@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from videosripper import ffmpeg_ops
 from videosripper.logging_setup import log_debug
 from videosripper.makemkv import TitleInfo, pick_feature_title, rip_title, scan
 from videosripper.models import MovieManifest, movie_output_path
@@ -24,6 +25,22 @@ from videosripper.sample_verify import preview_title
 from videosripper.title_verify import raise_on_errors, validate_manifest_titles
 
 logger = logging.getLogger("videosripper")
+
+
+def _postprocess_ripped(ripped: Path, staging: Path, manifest: MovieManifest) -> Path:
+    """Apply stream_defaults ffmpeg remux when configured; otherwise keep rip as-is."""
+    if not manifest.stream_defaults:
+        return ripped
+    sd = manifest.stream_defaults
+    if not sd.audio_default and not sd.subtitle_default:
+        return ripped
+    processed = staging / f".defaults_{ripped.stem}.mkv"
+    return ffmpeg_ops.apply_stream_defaults_or_keep(
+        ripped,
+        processed,
+        audio_lang=sd.audio_default,
+        subtitle_lang=sd.subtitle_default,
+    )
 
 
 def check_java() -> None:
@@ -175,6 +192,16 @@ def rip_movie(
         info.duration if info else "?",
         info.size_bytes if info else "?",
     )
+    from videosripper.logging_setup import PROCESS_RIP, log_progress
+
+    # 0/1 at start — movie is one title; 100% only after the file lands
+    log_progress(
+        "RIP",
+        0,
+        1,
+        process=PROCESS_RIP,
+        detail=f"ripping 1/1: title {title} → {out_path.name}",
+    )
 
     if sample_verify:
         logger.info(
@@ -216,6 +243,7 @@ def rip_movie(
             title,
             staging,
             manifest.meta.minlength,
+            stream_defaults=manifest.stream_defaults,
             monitor=monitor,
             retries=retry_cfg.count,
             delay_sec=retry_cfg.delay_sec,
@@ -229,8 +257,16 @@ def rip_movie(
         ):
             ripped.unlink(missing_ok=True)
             raise RuntimeError("Rip validation failed")
+        ripped = _postprocess_ripped(ripped, staging, manifest)
         shutil.move(str(ripped), str(out_path))
         logger.info("  -> %s", out_path)
+        log_progress(
+            "RIP",
+            1,
+            1,
+            process=PROCESS_RIP,
+            detail=f"done 1/1: title {title} → {out_path.name}",
+        )
         if manifest.nas.movies and manifest.post.copy_to_nas:
             nas_ok = copy_movie_to_share(
                 out_path,

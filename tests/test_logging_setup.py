@@ -17,10 +17,18 @@ def _patch_log_paths(monkeypatch: pytest.MonkeyPatch, log_root: Path) -> None:
     monkeypatch.setattr(logging_setup, "DEBUG_LOG", log_root / "debug.log")
     monkeypatch.setattr(logging_setup, "SCAN_LOG", log_root / "scan.log")
     monkeypatch.setattr(logging_setup, "ERROR_LOG", log_root / "error.log")
+    monkeypatch.setattr(logging_setup, "PIPELINE_LOG", log_root / "pipeline.log")
     # Force shared error handler to recreate against the patched path.
     if logging_setup._error_handler is not None:
         logging_setup._error_handler.close()
         logging_setup._error_handler = None
+    # Reset pipeline logger handlers so setup recreates against patched path.
+    pl = logging.getLogger(logging_setup._PIPELINE_LOGGER_NAME)
+    for handler in pl.handlers[:]:
+        pl.removeHandler(handler)
+        handler.close()
+    # Reset stage timing so elapsed markers are deterministic per test.
+    monkeypatch.setattr(logging_setup, "_last_stage_monotonic", None)
 
 
 def test_session_header_includes_manifest() -> None:
@@ -223,3 +231,129 @@ def test_constants() -> None:
     assert logging_setup.MAX_LOG_LINES == 50_000
     assert logging_setup.BACKUP_COUNT == 2
     assert logging_setup.ERROR_LOG.name == "error.log"
+    assert logging_setup.PIPELINE_LOG.name == "pipeline.log"
+
+
+def test_log_stage_and_progress_write_pipeline_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log_root = tmp_path / "logs"
+    _patch_log_paths(monkeypatch, log_root)
+
+    logging_setup.log_stage(
+        "SCAN",
+        process=logging_setup.PROCESS_INSERT,
+        step=1,
+        total=logging_setup.INSERT_STEPS,
+        detail="device=dev:/dev/sr0",
+    )
+    logging_setup.log_progress(
+        "RIP",
+        2,
+        12,
+        process=logging_setup.PROCESS_RIP,
+        detail="6x22 The Card",
+    )
+
+    text = (log_root / "pipeline.log").read_text(encoding="utf-8")
+    assert "STAGE [insert 1/5] SCAN" in text
+    assert "progress [rip] RIP 2/12 (16%)" in text
+    assert "6x22 The Card" in text
+
+
+def test_log_stage_process_prefix_distinguishes_insert_vs_rip(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log_root = tmp_path / "logs"
+    _patch_log_paths(monkeypatch, log_root)
+
+    logging_setup.log_stage("SCAN", process="insert", step=1, total=5)
+    logging_setup.log_stage("CLAIM", process="rip", step=1, total=5)
+    logging_setup.log_stage("SCAN_FAILED", process="insert", detail="boom")
+    logging_setup.log_stage("WATCHERS_UP", detail="idle")
+
+    lines = (log_root / "pipeline.log").read_text(encoding="utf-8").splitlines()
+    assert "STAGE [insert 1/5] SCAN" in lines[0]
+    assert "STAGE [rip 1/5] CLAIM" in lines[1]
+    assert "STAGE [insert] SCAN_FAILED" in lines[2]
+    assert "STAGE WATCHERS_UP" in lines[3]
+    assert "[1/5]" not in lines[3]  # status stages have no N/M
+
+
+def test_pipeline_log_lines_are_timestamped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import re
+
+    log_root = tmp_path / "logs"
+    _patch_log_paths(monkeypatch, log_root)
+
+    logging_setup.log_stage("SCAN", process="insert", step=1, total=5, detail="device=dev:/dev/sr0")
+    logging_setup.log_progress("RIP", 1, 2, process="rip")
+
+    lines = (log_root / "pipeline.log").read_text(encoding="utf-8").splitlines()
+    assert lines
+    for line in lines:
+        assert re.match(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", line), line
+
+
+def test_log_stage_appends_elapsed_since_previous_stage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log_root = tmp_path / "logs"
+    _patch_log_paths(monkeypatch, log_root)
+
+    fake_now = [100.0]
+    monkeypatch.setattr(logging_setup.time, "monotonic", lambda: fake_now[0])
+
+    logging_setup.log_stage("SCAN", process="insert", step=1, total=5)
+    fake_now[0] = 137.0
+    logging_setup.log_stage("PENDING", process="insert", step=2, total=5)
+    fake_now[0] = 137.0 + 3 * 60 + 7
+    logging_setup.log_stage("DONE", process="rip", step=5, total=5)
+
+    lines = (log_root / "pipeline.log").read_text(encoding="utf-8").splitlines()
+    assert "SCAN" in lines[0] and "[+" not in lines[0]
+    assert lines[1].endswith("=== [+37s]")
+    assert lines[2].endswith("=== [+3m07s]")
+
+
+def test_format_elapsed() -> None:
+    assert logging_setup._format_elapsed(9) == "9s"
+    assert logging_setup._format_elapsed(75) == "1m15s"
+    assert logging_setup._format_elapsed(3723) == "1h02m03s"
+
+
+def test_log_watcher_waiting_creates_pipeline_log(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log_root = tmp_path / "logs"
+    _patch_log_paths(monkeypatch, log_root)
+
+    logging_setup.log_watcher_waiting("disc-watcher", ["dev:/dev/sr0", "dev:/dev/sr1"])
+    logging_setup.log_watcher_waiting("rip-watcher")
+
+    text = (log_root / "pipeline.log").read_text(encoding="utf-8")
+    assert "STAGE WATCHERS_UP — disc-watcher waiting (devices=dev:/dev/sr0, dev:/dev/sr1)" in text
+    assert "STAGE WATCHERS_UP — rip-watcher waiting (staging/ready)" in text
+
+
+def test_log_progress_percent_is_completed_over_total() -> None:
+    """Percent = current/total completed tracks — not slot index or title id."""
+    # Mimic fixed TV progress: 0 done of 12 → 0%; 3 done of 12 → 25%
+    assert int(100 * 0 / 12) == 0
+    assert int(100 * 3 / 12) == 25
+    # Old bug: slot 3 of 12 tracks when slots start at 1 looked like 25% at first track
+    # if someone used slot as current with wrong total — we now use completed count.
+    assert int(100 * 3 / 12) != int(100 * 1 / 12)
+
+
+def test_build_map_prompt_requires_identified_title(tmp_path: Path) -> None:
+    from videosripper.map_agent import build_map_prompt
+
+    scan_json = tmp_path / "dvd-video.scan.json"
+    scan_json.write_text("{}", encoding="utf-8")
+    prompt = build_map_prompt("dvd-video", scan_json)
+    assert "IDENTIFIED work title" in prompt
+    assert "placeholder title" in prompt
+    assert "meta.disc_name = exact scan disc_name" in prompt

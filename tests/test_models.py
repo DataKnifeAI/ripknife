@@ -116,6 +116,19 @@ def test_load_manifest_movie() -> None:
     manifest = load_manifest(ROOT / "configs/movies/ghost-rider-spirit-of-vengeance.yaml")
     assert isinstance(manifest, MovieManifest)
     assert manifest.meta.title.startswith("Ghost Rider")
+    assert manifest.stream_defaults is not None
+    assert manifest.stream_defaults.audio_default == "eng"
+    assert manifest.stream_defaults.subtitle_default is None
+    assert manifest.stream_defaults.keep_all_tracks is True
+
+
+def test_load_hudson_hawk_movie_stream_defaults() -> None:
+    manifest = load_manifest(ROOT / "configs/movies/hudson-hawk-1991.yaml")
+    assert isinstance(manifest, MovieManifest)
+    assert manifest.stream_defaults is not None
+    assert manifest.stream_defaults.audio_default == "eng"
+    assert manifest.skips
+    assert manifest.skips[0].makemkv_title == 1
 
 
 def test_movie_fixed_title_requires_title() -> None:

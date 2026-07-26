@@ -28,8 +28,8 @@ from videosripper.post_rip_verify import (
     verify_track_outputs,
     warn_title_count_explosion,
 )
-from videosripper.sample_verify import preview_title
 from videosripper.retry import RetrySettings, call_with_retries
+from videosripper.sample_verify import preview_title
 from videosripper.title_verify import raise_on_errors, validate_manifest_titles
 
 logger = logging.getLogger("videosripper")
@@ -393,10 +393,28 @@ def rip_tv_disc(
     logger.info("Resume from slot: %s", start)
 
     try:
-        for track in manifest.tracks:
-            if track.slot < start:
-                continue
+        # Progress is "tracks completed / tracks in this run", not slot numbers
+        # (slots may be non-contiguous or start mid-disc via --start-at).
+        work_tracks = [t for t in manifest.tracks if t.slot >= start]
+        total_tracks = len(work_tracks)
+        completed = 0
+        for track in work_tracks:
             outputs = track_outputs(manifest, track)
+            from videosripper.logging_setup import PROCESS_RIP, log_progress
+
+            season = track_season(manifest, track)
+            ep_label = " + ".join(f"{season}x{ep} {title}" for ep, title, _ in outputs)
+            # current=completed → % done before this track; detail names which of N we're on
+            log_progress(
+                "RIP",
+                completed,
+                total_tracks,
+                process=PROCESS_RIP,
+                detail=(
+                    f"ripping {completed + 1}/{total_tracks}: "
+                    f"slot {track.slot} title {track.makemkv_title} — {ep_label}"
+                ),
+            )
             if all(p.exists() for _, _, p in outputs):
                 logger.info(
                     "=== Skipping slot %s title %s (already exists): %s ===",
@@ -404,6 +422,7 @@ def rip_tv_disc(
                     track.makemkv_title,
                     outputs[0][2].name,
                 )
+                completed += 1
                 continue
 
             _maybe_sample_verify(
@@ -428,6 +447,7 @@ def rip_tv_disc(
                 if dry_run:
                     for _, _, path in outputs:
                         logger.info("  [dry-run] would write %s", path.name)
+                    completed += 1
                     continue
                 resume_skip = frozenset(p for _, _, p in outputs if p.exists())
 
@@ -475,6 +495,7 @@ def rip_tv_disc(
                     label=f"slot {track.slot} title {track.makemkv_title}",
                     retry=retry_cfg,
                 )
+                completed += 1
                 continue
 
             if track.extract_chapter:
@@ -494,6 +515,7 @@ def rip_tv_disc(
                         track.extract_chapter.chapter_index,
                         final.name,
                     )
+                    completed += 1
                     continue
                 resume_skip = frozenset(p for _, _, p in outputs if p.exists())
 
@@ -536,6 +558,7 @@ def rip_tv_disc(
                     label=f"slot {track.slot} title {track.makemkv_title}",
                     retry=retry_cfg,
                 )
+                completed += 1
                 continue
 
             ep, title, final = outputs[0]
@@ -549,6 +572,7 @@ def rip_tv_disc(
             )
             if dry_run:
                 logger.info("  [dry-run] would write %s", final.name)
+                completed += 1
                 continue
             resume_skip = frozenset(p for _, _, p in outputs if p.exists())
 
@@ -581,6 +605,18 @@ def rip_tv_disc(
                 _rip_direct_slot,
                 label=f"slot {track.slot} title {track.makemkv_title}",
                 retry=retry_cfg,
+            )
+            completed += 1
+
+        if total_tracks:
+            from videosripper.logging_setup import PROCESS_RIP, log_progress
+
+            log_progress(
+                "RIP",
+                completed,
+                total_tracks,
+                process=PROCESS_RIP,
+                detail=f"tracks done {completed}/{total_tracks}",
             )
 
         if dry_run:

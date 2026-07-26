@@ -76,6 +76,50 @@ def test_flock_falls_back_when_system_lock_open_fails(
     assert opened == [str(system_lock), str(fallback)]
 
 
+def test_flock_is_reentrant_within_same_thread(tmp_path: Path) -> None:
+    """Nested flock on the same path must not deadlock the process against itself.
+
+    Regression: disc-watcher held the scan lock (== makemkv lock) and then
+    step_scan_disc re-acquired the same lock file via a new fd, blocking forever.
+    """
+    import threading
+
+    lock_path = tmp_path / "makemkv-sr0.lock"
+    done = threading.Event()
+
+    def nested() -> None:
+        with watcher_util.flock(lock_path, blocking=False):
+            with watcher_util.flock(lock_path, blocking=True):
+                done.set()
+
+    worker = threading.Thread(target=nested, daemon=True)
+    worker.start()
+    worker.join(timeout=5.0)
+    assert done.is_set(), "nested flock deadlocked"
+
+    # Lock must be fully released afterwards: a fresh non-blocking acquire works.
+    with watcher_util.flock(lock_path, blocking=False):
+        pass
+
+
+def test_flock_released_after_nested_exit(tmp_path: Path) -> None:
+    """Inner reentrant exit must not release the outer hold prematurely."""
+    import fcntl
+    import os
+
+    lock_path = tmp_path / "makemkv-sr0.lock"
+    with watcher_util.flock(lock_path):
+        with watcher_util.flock(lock_path):
+            pass
+        # Outer context still holds the lock: an independent fd cannot acquire it.
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+
+
 def test_scan_lock_path_matches_makemkv_lock(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -83,6 +127,22 @@ def test_scan_lock_path_matches_makemkv_lock(
     monkeypatch.setattr(watcher_util, "_resolved_lock_paths", {})
     monkeypatch.setattr(watcher_util.os, "access", lambda _path, _mode: False)
     assert watcher_util.scan_lock_path() == watcher_util.makemkv_lock_path()
+
+
+def test_makemkv_lock_path_per_device_is_distinct(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(watcher_util, "LOG_ROOT", tmp_path / "logs")
+    monkeypatch.setattr(watcher_util, "_resolved_lock_paths", {})
+    monkeypatch.setattr(watcher_util.os, "access", lambda _path, _mode: False)
+    global_lock = watcher_util.makemkv_lock_path()
+    sr0 = watcher_util.makemkv_lock_path("dev:/dev/sr0")
+    sr1 = watcher_util.makemkv_lock_path("dev:/dev/sr1")
+    assert global_lock.name == "makemkv.lock"
+    assert sr0.name == "makemkv-sr0.lock"
+    assert sr1.name == "makemkv-sr1.lock"
+    assert sr0 != sr1 != global_lock
+    assert watcher_util.scan_lock_path("dev:/dev/sr1") == sr1
 
 
 def test_scan_device_dict_returns_large_scan_summary(monkeypatch: pytest.MonkeyPatch) -> None:

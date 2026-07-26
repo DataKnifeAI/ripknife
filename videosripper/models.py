@@ -225,8 +225,10 @@ class MovieManifest(BaseModel):
     post: PostConfig = Field(default_factory=PostConfig)
     monitor: MonitorConfig = Field(default_factory=MonitorConfig)
     retry: RetryConfig = Field(default_factory=RetryConfig)
+    stream_defaults: StreamDefaultsConfig | None = None
     title_selection: TitleSelection = Field(default_factory=TitleSelection)
     validation: ValidationRules = Field(default_factory=ValidationRules)
+    skips: list[SkipEntry] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_movie_output(self) -> MovieManifest:

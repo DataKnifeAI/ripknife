@@ -1,0 +1,31 @@
+kind: movie
+meta:
+  id: hudson-hawk-1991
+  title: Hudson Hawk (1991)
+  disc_name: DVD_VIDEO
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  dir: Movies
+  filename: Hudson Hawk (1991).mkv
+nas:
+  movies: true
+  share: /mnt/tn-sas/Movies
+post:
+  eject: true
+  copy_to_nas: true
+# Disc marks French audio as default (SINFO "d"); English tracks are present.
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+  # omit subtitle_default → clear/disable subtitle default disposition
+# Generic DVD volume label DVD_VIDEO. Feature ~1:39:39 (5979s, ~3.3 GB).
+# Identified by user as Hudson Hawk (1991). Title 0 = feature; title 1 duplicate.
+title_selection:
+  mode: fixed
+  title: 0
+validation:
+  min_duration_sec: 5400
+  min_size_bytes: 3000000000
+skips:
+  - { makemkv_title: 1, reason: duplicate title (same duration as title 0) }

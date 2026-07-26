@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -71,6 +72,13 @@ def write_state_atomic(state: dict) -> None:
     tmp.replace(STATE_PATH)
 
 
+# Lock paths currently held by this thread. flock() treats each open fd as a
+# distinct owner, so re-acquiring the same lock file in a nested `with flock(...)`
+# (e.g. disc-watcher holds the scan lock, then step_scan_disc grabs the same
+# makemkv lock) would deadlock the process against itself without this.
+_held_locks = threading.local()
+
+
 @contextmanager
 def flock(lock_path: Path, *, blocking: bool = True) -> Iterator[None]:
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,12 +91,23 @@ def flock(lock_path: Path, *, blocking: bool = True) -> Iterator[None]:
         fallback.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(fallback, os.O_CREAT | os.O_RDWR, 0o644)
         lock_path = fallback
+    held: set[str] = getattr(_held_locks, "paths", None) or set()
+    _held_locks.paths = held
+    key = str(lock_path)
+    if key in held:  # reentrant: this thread already holds the lock
+        os.close(fd)
+        yield
+        return
     flags = fcntl.LOCK_EX
     if not blocking:
         flags |= fcntl.LOCK_NB
     try:
         fcntl.flock(fd, flags)
-        yield
+        held.add(key)
+        try:
+            yield
+        finally:
+            held.discard(key)
     finally:
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
@@ -140,17 +159,28 @@ def _lock_path(name: str) -> Path:
     return resolved
 
 
-def makemkv_lock_path() -> Path:
-    return _lock_path("makemkv")
+def makemkv_lock_path(device: str | None = None) -> Path:
+    """MakeMKV access lock.
+
+    With ``device=None`` returns the global lock (single-drive default).
+    With a device string returns a per-drive lock (e.g. ``…-makemkv-sr0.lock``)
+    so two physical drives can run MakeMKV concurrently while a single drive
+    stays mutually exclusive.
+    """
+    if device is None:
+        return _lock_path("makemkv")
+    from videosripper.devices import device_slug
+
+    return _lock_path(f"makemkv-{device_slug(device)}")
 
 
-def scan_lock_path() -> Path:
-    """Same lock as makemkv — all MakeMKV access must be mutually exclusive."""
-    return makemkv_lock_path()
+def scan_lock_path(device: str | None = None) -> Path:
+    """Same lock as makemkv — MakeMKV access on a drive must be mutually exclusive."""
+    return makemkv_lock_path(device)
 
 
 def watcher_lock_path(name: str) -> Path:
-    """Per-watcher singleton lock (rip-watcher, disc-watcher)."""
+    """Per-watcher singleton lock (rip-watcher, disc-watcher, per-device workers)."""
     return LOG_ROOT / f"{name}.pid.lock"
 
 

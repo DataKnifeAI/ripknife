@@ -11,6 +11,9 @@ output:
 nas:
   movies: true
   share: /mnt/tn-sas/Movies
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
 title_selection:
   mode: auto_feature
   min_duration_sec: 4800

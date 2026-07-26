@@ -6,7 +6,9 @@ Instructions for an LLM assisting with DVD ripping on this machine. Read this fi
 
 Rip SpongeBob SquarePants DVDs losslessly with MakeMKV, rename files for Plex, copy each episode to the NAS library, and optionally eject the disc when finished (`post.eject: true` in the manifest).
 
-**Workflow:** Config-driven **Python CLI** + YAML manifests under `configs/`. See [Primary workflow](#primary-workflow-python-cli--yaml). Legacy bash scripts are archived in `scripts/archive/` for reference only.
+**Archive principle:** the pipeline is **lossless remux only** (MakeMKV → MKV; ffmpeg disposition remux, no re-encode). Blu-ray / UHD stay native. Optional AI upscale is a **DVD-only derivative** — never replace the remux. See [Optional post-processing: DVD upscale (RTX 4090)](#optional-post-processing-dvd-upscale-rtx-4090).
+
+**Workflow:** Config-driven **Python pipeline** (`videosripper/pipeline.py`) + YAML manifests. Watchers call pipeline step functions directly — not shell scripts. See [Pipeline orchestration](#pipeline-orchestration). Legacy bash rip scripts are archived in `scripts/archive/`.
 
 ## Host environment
 
@@ -19,6 +21,7 @@ Rip SpongeBob SquarePants DVDs losslessly with MakeMKV, rename files for Plex, c
 | Library path | Source `~/.config/environment.d/makemkv.conf` before running makemkv |
 | Optical drive | Pioneer BD-XD07 USB → `/dev/sr0` |
 | Drive group | User must be in `optical` group; kernel modules: `sg`, `sr_mod`, `usb_storage` |
+| GPU (optional upscale) | NVIDIA RTX 4090 (Ada, 24 GB VRAM, CUDA / TensorRT) — DVD derivative post-processing only |
 
 ## Directory layout (all on game drive)
 
@@ -28,25 +31,23 @@ Rip SpongeBob SquarePants DVDs losslessly with MakeMKV, rename files for Plex, c
   LLM-RIP-WORKFLOW.md       ← this file (LLM-assisted ripping)
   pyproject.toml            ← Python package metadata
   .venv/                    ← local venv (create on install; not in git)
-  videosripper/             ← Python package (cli.py, models, runner, …)
-  configs/                  ← YAML manifests (primary rip configs)
-    defaults.yaml           ← reference defaults
-    spongebob/s8-disc{1,2,3}.yaml
-    anime/naruto-shippuden-set10-disc*.yaml
-    shows/breaking-bad-s1-disc{1,2}.yaml, breaking-bad-s2-disc{1,2,3}.yaml, breaking-bad-s3-disc1.yaml
-    movies/ghost-rider-spirit-of-vengeance.yaml
-    movies/scarface-1983.yaml
+  videosripper/
+    pipeline.py           ← step functions (serial / parallel / background)
+    map_agent.py          ← LLM YAML mapper (replaces trigger-map.sh logic)
+    cli.py, runner.py, …
   scripts/
-    videosripper            ← launcher → .venv/bin/python -m videosripper.cli
-    videosripper-common.sh  ← shared bash (NAS rsync, staging, eject)
-    fix-*.sh, rename-*.sh   ← host/NAS helpers
-    examples/               ← episode title lists (reference when authoring YAML)
-    archive/                ← legacy per-disc bash scripts (20 files; reference only)
-  logs/                     ← running logs (append; rotate at 50k lines, keep .1–.3)
+    videosripper            ← thin bash launcher → Python CLI
+    disc-watcher.py         ← Process 1 → pipeline.handle_disc_insert()
+    rip-watcher.py          ← Process 2 → pipeline.process_ready_manifest()
+    trigger-map.sh          ← wrapper → python -m videosripper.map_agent
+    fix-*.sh                ← host helpers (drive, NAS mounts) only
+    logs/                     ← running logs (append; rotate at 50k lines, keep .1–.3)
+    pipeline.log            ← high-level STAGE / progress (main overview)
     rip.log                 ← high-level rip status
     debug.log               ← makemkv/ffprobe/subprocess detail
     scan.log                ← scan summaries
     error.log               ← ERROR/CRITICAL + exception tracebacks
+    disc-watcher.log / rip-watcher.log / map.log
   output/                   ← final MKV files (e.g. output/Season 8/)
   staging/                  ← temp dirs during each title rip (.rip.XXXXXX)
 ```
@@ -63,7 +64,7 @@ Override paths only via env vars (see [Environment variables](#environment-varia
 | `/mnt/tn-sas/Anime/Naruto Shippuden/Season N/` | Naruto Shippuden Plex library (Anime share) |
 | `/mnt/tn-sas/Shows/<Show>/Season N/` | Live-action / non-anime TV (Shows share) |
 | `/mnt/tn-sas/Movies/` | Feature films (Movies share) |
-| Copy method | `rsync` via `copy_episode_to_share` / `copy_movie_to_share` in `scripts/videosripper-common.sh` |
+| Copy method | `rsync` via `videosripper/nas.py` (`copy_episode_to_share`, `copy_movie_to_share`, `eject_disc`) |
 
 Ensure the destination folder is writable (`drwxrwxrwx` or equivalent) before copying.
 
@@ -92,6 +93,8 @@ rw,relatime,vers=4.2,async,nconnect=4,rsize=1048576,wsize=1048576,_netdev,soft,n
 - **BD-Java discs need a JRE** — MakeMKV warns `requires Java runtime (JRE), but none was found`. Install `jre-openjdk` (or `jre8-openjdk` if MakeMKV still misses it); verify with `java -version` and re-scan.
 - **Use the same `--minlength` for scan and rip** — e.g. `info -r --minlength=300` then `mkv -r --minlength=300`. A mismatched minlength renumbers titles (Ghost Rider: title 0 became a ~294 MB promo at minlength=120 instead of 00800.mpls theatrical ~24 GB).
 - **Verify before NAS copy** — `ffprobe` duration (reject feature rips &lt; ~80 min) and file size (reject &lt; ~5 GB for a typical BD feature). Do not rsync a bad rip to `/mnt/tn-sas/Movies/`.
+- **Always set `stream_defaults` on movie manifests** — English-language films: `audio_default: eng`, omit `subtitle_default` (clear subtitle default). Without this, MakeMKV preserves the disc’s default audio (often French/Spanish on multi-audio DVDs/BDs). See [stream_defaults](#stream_defaults-anime-language-defaults).
+- **UHD / 4K (future):** pipeline is BD-path compatible (MakeMKV `mkv` + keep-all tracks + ffmpeg disposition remux). Expect gaps before first UHD rip: AACS2 / disc drive firmware support in MakeMKV, HDR10 vs Dolby Vision retention (no HDR tone-map step today), TrueHD+Atmos / multi-audio selection (prefer lossless via `prefer_lossless` in ffmpeg remux), and larger size floors in `validation.min_size_bytes`.
 
 **After fstab changes:**
 
@@ -132,6 +135,107 @@ Naruto Shippuden - 12x249 - Thank You.mkv
 - **Physical Blu-ray set number ≠ anime season.** Viz Media box sets are numbered independently of Plex/TheTVDB seasons — one physical set can span multiple anime seasons. Always check the NAS library (`ls "/mnt/tn-sas/Anime/Naruto Shippuden/Season N/"`) for the next missing episode numbers and set `meta.season` to that Plex season, not the box-set number. Example: **Blu-ray Set 10 Disc 1** contains episodes **249–255**, which belong in **Season 12** (NAS already has 12x243–12x248).
 - Match existing NAS spelling (`Naruto Shippuden` without macron in recent rips).
 - Sanitize titles: no `?`, `/`, `:`, etc. (existing library keeps `!` where present).
+
+## Pipeline orchestration
+
+All rip workflow steps are **Python functions** in `videosripper/pipeline.py`. Scheduling depends on step kind:
+
+| Kind | Steps | Scheduling |
+|------|-------|------------|
+| `MAKEMKV` | scan, rescan, rip | **Serial per drive** — `makemkv[-<slug>]` lock |
+| `LOCAL` | validate, registry lookup, write pending JSON | **Parallel** — `run_parallel()` |
+| `BACKGROUND` | LLM map agent | **Async** — `step_trigger_map_async()` |
+
+**Process 1** (`disc-watcher.py`): `handle_disc_insert()` → scan (serial) → registry hit OR background map.
+
+**Process 2** (`rip-watcher.py`): `process_ready_manifest()` → validate (local) → rescan + verify + rip (serial under makemkv lock).
+
+### Multiple drives / parallel rips
+
+The unit of concurrency is the **drive**, not the individual job. MakeMKV locks are
+**per-drive** (`makemkv-sr0.lock`, `makemkv-sr1.lock`, …), so one disc per drive can
+rip simultaneously while a single drive stays mutually exclusive. `videosripper/devices.py`
+provides `discover_optical_devices()` (enumerates `/dev/sr*`) and `device_slug()`.
+
+- **Single drive (default):** run the watchers with no device args — behavior is unchanged
+  (`dev:/dev/sr0`, global-compatible flow).
+- **Specific drives:** `--device dev:/dev/sr0 --device dev:/dev/sr1` (repeatable).
+- **Auto-discover all drives:** `--auto`.
+
+```bash
+# Watch every optical drive for inserts, scan + map each in parallel:
+scripts/disc-watcher.py --auto
+
+# Run one rip worker per drive (pull-by-disc: each drive rips the ready
+# manifest matching the disc it currently holds):
+scripts/rip-watcher.py --auto
+# or bind specific drives:
+scripts/rip-watcher.py --device dev:/dev/sr0 --device dev:/dev/sr1
+```
+
+**Disc-watcher** runs one thread per drive; each has its own scan lock, watcher lock
+(`disc-watcher-<slug>`), and state section (`disc_watcher:<slug>`).
+
+**Rip-watcher** has two modes:
+- *Default (no device args):* single-drive, file-driven — rips each ready manifest against
+  its `meta.device`.
+- *Device-bound (`--device`/`--auto`):* one worker per drive using `run_device_worker_once()`.
+  Each worker scans the disc in its drive, atomically **claims** the matching ready manifest
+  (rename to `*.claimed-<slug>`), rebinds `meta.device` to that drive, and rips. This avoids
+  the "which drive holds this disc?" problem — a manifest rips on whichever drive has its disc.
+
+**Manual steps:** `scripts/videosripper scan|validate|rip …` — same Python code paths as the watchers.
+
+Shell remains only for: `scripts/videosripper` launcher, `fix-optical-drive.sh`, NAS mount helpers, and `trigger-map.sh` (one-line wrapper to `python -m videosripper.map_agent`).
+
+### Pipeline stage log (`logs/pipeline.log`)
+
+Single overview log for “where are we?” — watchers and rip call `log_stage` / `log_progress`.
+Both watchers log `STAGE WATCHERS_UP` at startup, so the file exists (and `tail -F logs/pipeline.log`
+works) immediately after `make watch-all`. Every file line is timestamped, and each STAGE line
+carries a `[+…]` marker with the elapsed time since the previous stage in that process —
+so per-stage timing is on the line and overall timing is first-timestamp → DONE-timestamp.
+
+**Two numbered pipelines** (never bare `[1/5]` — that was ambiguous):
+
+| Tag | Process | Steps |
+|-----|---------|-------|
+| `[insert N/5]` | disc-watcher | SCAN → PENDING → REGISTRY → MAP → MAP_LAUNCHED (or REGISTRY_HIT / READY_EXISTS) |
+| `[rip N/5]` | rip-watcher | CLAIM/VALIDATE → RESCAN → VERIFY → RIP → DONE |
+
+After `[rip …] DONE` (and `post.copy_to_nas` / eject), the remux is the archive master. **Optional DVD upscale** would be a later, separate step on those finished MKVs — not part of the numbered rip pipeline today. See [Optional post-processing: DVD upscale (RTX 4090)](#optional-post-processing-dvd-upscale-rtx-4090).
+
+Status-only lines omit `N/M`: `WATCHERS_UP`, `DISC_DETECTED`, `IDLE`, `WAITING_MANIFEST`.
+Failures keep the process tag without a step: `=== STAGE [insert] SCAN_FAILED — … ===`.
+
+Each stage names the object it is working on: device for SCAN/DISC_DETECTED, disc name + slug id
+for PENDING/REGISTRY/MAP, manifest label + yaml filename for VALIDATE/VERIFY/RIP/DONE.
+`progress [rip] RIP` uses **tracks completed / tracks in this run** (not slot or makemkv title index),
+so `0/12 (0%)` means starting the first of 12, `3/12 (25%)` means three finished. Movies log
+`0/1` while ripping and `1/1` after the file lands. MakeMKV PRGV is stall-watch only — not the
+pipeline percent.
+
+```
+2026-07-25 16:40:02 === STAGE WATCHERS_UP — disc-watcher waiting (devices=dev:/dev/sr0, dev:/dev/sr1) ===
+2026-07-25 16:40:03 === STAGE WATCHERS_UP — rip-watcher waiting (devices=dev:/dev/sr0, dev:/dev/sr1) ===
+2026-07-25 16:41:26 === STAGE DISC_DETECTED — device=dev:/dev/sr0; debouncing 45s === [+1m23s]
+2026-07-25 16:42:11 === STAGE [insert 1/5] SCAN — device=dev:/dev/sr0 === [+45s]
+2026-07-25 16:43:20   progress [insert] SCAN 2/2 (100%) — titles found (DVD_VIDEO)
+2026-07-25 16:43:20 === STAGE [insert 2/5] PENDING — disc=DVD_VIDEO id=dvd-video -> dvd-video.scan.json === [+1m09s]
+2026-07-25 16:43:20 === STAGE [insert 3/5] REGISTRY — lookup disc=DVD_VIDEO id=dvd-video ===
+2026-07-25 16:43:20 === STAGE [insert 4/5] MAP — unknown disc id=dvd-video (DVD_VIDEO) ===
+2026-07-25 16:43:21 === STAGE [insert 5/5] MAP_LAUNCHED — id=dvd-video background agent; waiting for staging/ready/dvd-video.yaml ===
+2026-07-25 16:45:01 === STAGE [rip 1/5] CLAIM — scarface-1983.yaml claimed by dev=dev:/dev/sr0 (disc=DVD_VIDEO) === [+1m40s]
+2026-07-25 16:45:02 === STAGE [rip 2/5] RESCAN — Scarface (1983) dev=dev:/dev/sr0 ===
+2026-07-25 16:47:29 === STAGE [rip 3/5] VERIFY — disc=DVD_VIDEO vs manifest=Scarface (1983) (scarface-1983.yaml) === [+2m27s]
+2026-07-25 16:47:30 === STAGE [rip 4/5] RIP — Scarface (1983) (1 track(s)) dev=dev:/dev/sr0 ===
+2026-07-25 16:47:30   progress [rip] RIP 0/1 (0%) — ripping 1/1: title 0 → Scarface (1983).mkv
+2026-07-25 17:12:44   progress [rip] RIP 1/1 (100%) — done 1/1: title 0 → Scarface (1983).mkv
+2026-07-25 17:12:45 === STAGE [rip 5/5] DONE — Scarface (1983) (scarface-1983.yaml -> staging/done) === [+25m15s]
+2026-07-25 17:13:10 === STAGE IDLE — device=dev:/dev/sr0 — no disc; waiting for insert === [+25s]
+```
+
+Per-process detail stays in `rip.log` / `disc-watcher.log` / `rip-watcher.log` / `debug.log`.
 
 ## Primary workflow (Python CLI + YAML)
 
@@ -233,15 +337,30 @@ Some Blu-rays expose hundreds of playlists with the **same name and duration** (
 
 ### Title research checklist for LLM mapper
 
-Use this when **Process 1.5** (`scripts/trigger-map.sh` / Cursor `agent -p`) authors `staging/ready/<disc-id>.yaml` from `staging/pending/*.scan.json`. Wrong title picks waste hours on copy-protect loops, decoy playlists, or scene-jump dummies — research before writing YAML.
+Use this when **Process 1.5** (`videosripper.map_agent` / Cursor `agent -p`) authors `staging/ready/<disc-id>.yaml` from `staging/pending/*.scan.json`. Wrong title picks waste hours on copy-protect loops, decoy playlists, or scene-jump dummies — research before writing YAML.
 
 **1. Read all inputs**
 
-- `staging/pending/<disc-id>.scan.json` — full title list (`index`, `name`, `duration`, `duration_sec`, `size_bytes`) plus `obfuscation` when present.
-- `staging/pending/<disc-id>.meta.json` — `disc_name`, `title_count`, `minlength`, and flattened `recommended_title` / `decoy_indices` when obfuscated.
+- `staging/pending/<disc-id>.scan.json` — full title list (`index`, `name`, `duration`, `duration_sec`, `size_bytes`) plus `obfuscation` and `identification` when present.
+- `staging/pending/<disc-id>.meta.json` — `disc_name`, `title_count`, `minlength`, flattened `recommended_title` / `decoy_indices`, plus identification fields:
+  - `identification.bluray_title` / `bluray_title` — from `BDMV/META/DL/bdmt_*.xml` (strong signal on Blu-ray)
+  - `identification.candidates[]` / `title_candidates` — TMDb/OMDb runtime shortlist for generic DVD/BD labels
+  - `preferred_id` / `identified_title` when a confident title was inferred
 - Scan **Notes** (console `videosripper scan --json` table, or re-run `scan-device --json` and inspect suspicious names / short durations). Flags: `suspicious:`, `short title; later title N`, `recommended feature`, `decoy:`.
 - `configs/registry.yaml` — if a similar `disc_name` already has a manifest, copy its `tracks[]` / `skips[]` pattern and episode numbering; do not invent indices from memory.
 - This file — season/disc tables and [Title validation](#title-validation-avoid-wrong--copy-protected-titles) rules.
+
+**1b. Generic volume labels (`DVD_VIDEO`, `VIDEO_TS`, …)**
+
+MakeMKV's `disc_name` is only the filesystem volume label — many commercial DVDs ship as `DVD_VIDEO` with **no on-disc movie title**. Process 1 attaches an `identification` block:
+
+| Source | When | Strength |
+|--------|------|----------|
+| Blu-ray `bdmt_*.xml` (`di:name`) | Disc mounts with `BDMV/META/DL/` | Strong — prefer as `meta.title` |
+| TMDb discover-by-runtime | `VIDEOSRIPPER_TMDB_API_KEY` set; feature duration known | Candidates only — pick among them |
+| OMDb title search | `VIDEOSRIPPER_OMDB_API_KEY` set + non-generic hint | Candidates / runtime filter |
+
+Never invent placeholders like `DVD_VIDEO (unknown)`. If hints are empty, leave pending for human identification.
 
 **2. Scene-jump / dummy early titles (DVD TV)**
 
@@ -277,7 +396,11 @@ When `obfuscation.detected` is true (or `title_count` > 50 with many identical n
 
 **6. Required manifest fields**
 
-- Always set `meta.disc_name` from scan `disc_name` (watcher/registry verification).
+- Always set `meta.disc_name` from scan `disc_name` (watcher/registry verification) — **even when generic** (`DVD_VIDEO`, `VIDEO_TS`, etc.).
+- **`meta.id` / `meta.title` / `output.filename` / ready YAML basename = identified work title**, not the disc label.
+  - Good: `title: Scarface (1983)`, `id: scarface-1983`, `filename: Scarface (1983).mkv`, `disc_name: DVD_VIDEO`
+  - Bad: using `DVD_VIDEO` as the movie title or output filename
+- If disc_name is generic, **identify the movie/show first** using `identification` hints (bdmt title, runtime candidates), then box art / web search before writing YAML. Do not invent placeholder titles for NAS.
 - Set `meta.minlength` to match the scan (default 300).
 - For movies: `title_selection.mode: auto_feature` unless a specific index is proven; include `validation` floors.
 - For TV: map `tracks[].makemkv_title` to TINFO indices from the scan; `skips[]` for play-all, extras, decoys, and skipped angles.
@@ -285,9 +408,9 @@ When `obfuscation.detected` is true (or `title_count` > 50 with many identical n
 **7. Validate before ready**
 
 ```bash
-# Write to staging/ready/<disc-id>.yaml first, then:
-scripts/videosripper validate staging/ready/<disc-id>.yaml --with-scan \
-  --scan-json staging/pending/<disc-id>.scan.json
+# Prefer staging/ready/<identified-slug>.yaml (not the generic disc slug):
+scripts/videosripper validate staging/ready/<identified-slug>.yaml --with-scan \
+  --scan-json staging/pending/<scan-disc-id>.scan.json
 ```
 
 Fix all errors (unknown title index, decoy pick, below minlength, suspicious name) before Process 2 moves the manifest to `configs/` or rips.
@@ -374,6 +497,112 @@ Never restart while makemkvcon is mid-rip without killing it first. **Do not** r
 
 Movies: `ffprobe` duration and file size before trusting NAS copy (see [Feature films](#feature-films-blu-ray--bd-java)).
 
+## Optional post-processing: DVD upscale (RTX 4090)
+
+**Not implemented in code yet** — research + design notes for a future optional step. Do not upscale during rip; do not touch BD/UHD masters.
+
+### Scope and archive rules
+
+| Rule | Detail |
+|------|--------|
+| **DVD only** | Consider AI upscale for DVD (≈480i/480p / 576i) sources. **Blu-ray and UHD stay native** — no upscale pass. |
+| **Keep the remux** | MakeMKV → MKV remains the archival master (lossless video/audio). Upscale is always a **derivative copy**. |
+| **Never replace originals** | Do not overwrite files under `output/` or the Plex library remuxes. Write a new path/name. |
+| **HDR** | N/A for DVD (SDR). Do not invent HDR metadata on upscaled DVD derivatives. |
+| **Time / disk** | Expect hours–days per feature or season disc on even a 4090; 1080p derivatives are often **several×** the remux size (re-encoded HEVC/AV1). Budget NAS space separately. |
+
+**Suggested paths / names** (pick one convention and stick to it):
+
+```
+# Sibling derivative next to remux (local staging for review)
+output/Season 8/SpongeBob SquarePants - S08E01 - Accidents Will Happen.mkv          # remux (master)
+output/upscaled/Season 8/SpongeBob SquarePants - S08E01 - Accidents Will Happen.upscaled.1080p.mkv
+
+# Or a separate NAS / Plex library root (recommended for “watching” copies)
+/mnt/tn-sas/Anime/Spongebob Squarepants Upscaled/Season 8/...upscaled.1080p.mkv
+```
+
+### Recommended target resolution
+
+Prefer **1080p** for DVD → archive derivatives (≈3–4× linear from NTSC 480p; best quality / size / time tradeoff on a 4090).
+
+**4K from DVD** mostly synthesizes detail the disc never had. Use only for intentional big-screen vanity copies after checking artifacts on a short sample. For anime line art, aggressive 4× models can look over-sharpened or temporally unstable — prefer 2×→1080p (or 2× then mild encode) over blind 4×→2160p.
+
+### Tool comparison (2025–2026, practical archival DVD use)
+
+| Tool | License | 4090 support | DVD quality (anime / live-action) | Speed ballpark (4090) | CLI / automation |
+|------|---------|--------------|-----------------------------------|------------------------|------------------|
+| **Topaz Video AI** | Commercial (paid license) | Excellent — CUDA + TensorRT (incl. TensorRT for RTX) | Best overall live-action; Gaia / anime-oriented models for 2D | Proteus-class ~15–25 fps @ 2× from HD benchmarks; DVD→1080p often real-time–ish; DVD→4K / Starlight much slower (minutes per second of film for heavy models) | Strong — bundled `ffmpeg` + `tvai_up`; GUI “Show Export Command”; [topyaz](https://github.com/twardoch/topyaz) Python wrapper |
+| **Video2X** (+ Real-ESRGAN / Real-CUGAN / RIFE) | AGPL-3.0 | Vulkan on NVIDIA (Kepler+); 24 GB VRAM comfortable | Strong anime (`realesr-animevideov3`, Real-CUGAN); live-action OK with `realesrgan-plus` / general models | Compact anime models often ~few–tens fps on mid/high GPUs; heavy `realesrgan-plus` can drop to ≪1–few fps | Excellent CLI (`video2x -i … -o … -p realesrgan …`) |
+| **VapourSynth + vs-mlrt** | LGPL (plugin) + model licenses | Best open NVIDIA path — TensorRT / TRT-RTX, CUDA ORT, Vulkan | Top-tier if you build a proper chain (QTGMC deinterlace → DPIR/SCUNet denoise → RealESRGAN/waifu2x) | TensorRT on 4090 can be very fast once engines are built; setup cost is high | Scriptable (`.vpy` + `vspipe` → ffmpeg); steeper than Video2X |
+| **chaiNNer** | GPL-3.0 | PyTorch CUDA / ONNX / TensorRT | Flexible model zoo (ESRGAN family, etc.); quality depends on chosen models | Competitive with PyTorch/TRT backends; video via Load Video node | GUI-first; **experimental** CLI (`chainner run chain.chn --override …`) — weaker for production automation |
+| **ffmpeg libplacebo / CUDA scale** | LGPL (ffmpeg) | CUDA hwaccel / Vulkan libplacebo | **Not AI** — best traditional scalers (`ewa_lanczossharp`, Anime4K shaders). Sharper than bicubic, **no** reconstructed detail | Real-time or faster | Trivial CLI; fine for quick previews, not archival “remaster” quality |
+| **SeedVR2** (ComfyUI / research) | Research / model terms (ByteDance Seed) | CUDA; 3B fits 4090; 7B needs careful VRAM | Strong generative restoration (stylized/anime); live-action often still favors Topaz | Slow vs CNN upscalers; batch/chunk oriented | ComfyUI / scripts — powerful but heavy for a rip pipeline |
+
+**Other notes:** RIFE (in Video2X / vs-mlrt) is **frame interpolation**, not upscale — optional after upscale if you want 48/60 fps; usually skip for archival fidelity. Deinterlace DVD **before or inside** the enhancer (Topaz interlaced / Dione-class models, or QTGMC in VapourSynth). Fix anamorphic PAR (store / display square pixels) as part of the derivative encode.
+
+### Recommendation for this workflow
+
+| Role | Choice | Why |
+|------|--------|-----|
+| **Primary** (quality + 4090 + automatable) | **Topaz Video AI** | Best practical live-action DVD results; first-class Ada / TensorRT; exportable ffmpeg CLI and Python wrappers fit a future VideosRipper post-step |
+| **Free / open alternative** | **Video2X** (Real-ESRGAN / Real-CUGAN) | Solid CLI, Linux-friendly, good anime models; no license fee. Step up to **vs-mlrt + TensorRT** when you want maximum open-source NVIDIA throughput and custom deinterlace/denoise chains |
+
+**Suggested models / presets**
+
+- **Live-action DVD:** Topaz **Proteus** (general) or **Iris** (noisy / face-heavy / older DVD); try interlaced-aware path or deinterlace first. Free path: Video2X `realesrgan-plus` or `realesr-generalv3` @ **2× → 1080p**.
+- **Animation / anime DVD:** Topaz **Gaia CG / Gaia Animation**; free: Video2X `realesr-animevideov3` or Real-CUGAN. Avoid live-action face models on hard-edged cel animation.
+- **Always:** process a **1–2 minute sample** before committing a full feature or season disc.
+
+### Rough CLI examples
+
+**Topaz Video AI** (use Topaz’s bundled ffmpeg; set model dirs; generate exact filter args via GUI → Process → Show Export Command):
+
+```bash
+export TVAI_MODEL_DIR="/path/to/Topaz Video AI/models"
+export TVAI_MODEL_DATA_DIR="$TVAI_MODEL_DIR"
+
+# Illustrative only — model name / scale / encoder flags must match your Topaz install
+"/path/to/Topaz Video AI/ffmpeg" -y -i \
+  "output/Season 8/Show - S08E01 - Title.mkv" \
+  -vf "tvai_up=model=prob-4:scale=2:device=0:vram=1:instances=1" \
+  -c:v hevc_nvenc -preset p5 -cq 18 -c:a copy \
+  "output/upscaled/Season 8/Show - S08E01 - Title.upscaled.1080p.mkv"
+```
+
+Or batch via [topyaz](https://pypi.org/project/topyaz/): `topyaz video -i in.mkv -o out.mkv -m <model> --scale 2 --codec hevc_nvenc …`
+
+**Video2X** (free path — anime example, 2×):
+
+```bash
+video2x -i "output/Season 8/Show - S08E01 - Title.mkv" \
+  -o "output/upscaled/Season 8/Show - S08E01 - Title.upscaled.1080p.mkv" \
+  -p realesrgan -s 2 --realesrgan-model realesr-animevideov3 -g 0
+```
+
+Live-action: swap model to `realesrgan-plus` (or current general model). List GPUs: `video2x --list-gpus`.
+
+**ffmpeg libplacebo** (fast non-AI preview / comparison only):
+
+```bash
+ffmpeg -i "in.mkv" -vf "libplacebo=w=1920:h=1080:upscaler=ewa_lanczossharp:normalize_sar=true" \
+  -c:v hevc_nvenc -cq 18 -c:a copy "out.libplacebo.1080p.mkv"
+```
+
+**vs-mlrt** — build a `.vpy` (deinterlace → TensorRT RealESRGAN) and pipe: `vspipe script.vpy -c y4m - | ffmpeg -i - -i in.mkv -map 0:v -map 1:a -c:v hevc_nvenc …` (engine build is one-time per model/resolution).
+
+### Where it would plug into VideosRipper later (design only)
+
+Natural hook: **after** remux + verify + optional `post.copy_to_nas` — i.e. once `[rip …] DONE` has produced the master MKV. Do **not** fold upscale into MakeMKV stages or the `[rip N/5]` numbered pipeline.
+
+Possible future shapes (none implemented):
+
+1. **Manifest flag** — e.g. `post.upscale: { enabled: true, tool: topaz|video2x, target: 1080p, only_if: dvd }` skipped for BD/UHD manifests.
+2. **Separate queue / CLI** — `scripts/videosripper upscale configs/….yaml` or a watcher that consumes finished remuxes from `output/` into `output/upscaled/` (or a dedicated NAS share) so GPU work does not block optical rips.
+3. **Library policy** — Plex continues to point at remuxes; upscaled copies live in a second library or `… Upscaled/` tree.
+
+Until then: rip lossless as today; run Topaz or Video2X **manually** on selected DVD remuxes when you want a watchable HD derivative.
+
 ## YAML manifest schema
 
 Manifests live under `configs/`. See `configs/defaults.yaml` for shared path defaults.
@@ -396,6 +625,8 @@ nas:
 post:
   eject: true                     # default; eject after successful real rip only
   copy_to_nas: true               # rsync to NAS after rip
+  # Future (not implemented): optional DVD-only upscale derivative — see
+  # "Optional post-processing: DVD upscale (RTX 4090)". Never replace remux.
 # optional — defaults match configs/defaults.yaml / env
 # retry:
 #   count: 3                      # 3 retries = 4 total attempts; then eject + user intervention
@@ -449,18 +680,25 @@ stream_defaults:
   audio_default: jpn             # ffmpeg remux sets default audio disposition
   subtitle_default: eng          # ffmpeg remux sets default subtitle disposition
 
-# Live-action TV (English audio, no default subtitle)
+# Live-action TV / English-language movies (English audio, no default subtitle)
 stream_defaults:
   keep_all_tracks: true
   audio_default: eng
   # omit subtitle_default (or null) → clear/disable subtitle default disposition
+
+# Foreign-language film (example: French original)
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: fre
+  subtitle_default: eng
 ```
 
-- **`keep_all_tracks`:** temporarily sets `app_DefaultSelectionString` in `~/.MakeMKV/settings.conf` during each title rip (restored after).
+- **`keep_all_tracks`:** temporarily sets `app_DefaultSelectionString` in `~/.MakeMKV/settings.conf` during each title rip (restored after). Applies to **TV and movie** manifests (`runner.py` / `movie.py`).
 - **`audio_default` / `subtitle_default`:** post-rip ffmpeg copy remux adjusts MKV default flags only; no re-encode.
 - **Omit `subtitle_default`:** when `audio_default` is set and `subtitle_default` is omitted/null, remux clears all subtitle default dispositions (tracks kept, none marked default).
 - Anime discs may ship with English audio default — post-process flips default to Japanese while keeping English dubs/subs.
-- Examples: `configs/anime/naruto-shippuden-set10-disc1.yaml`, `configs/shows/breaking-bad-s1-disc1.yaml`.
+- **Movies:** required for English-language titles. Multi-audio DVDs/BDs often flag a non-English track as disc default (Hudson Hawk DVD: French `SINFO` default; John Wick BD: Spanish). Without `stream_defaults`, that flag wins in the MKV.
+- Examples: `configs/anime/naruto-shippuden-set10-disc1.yaml`, `configs/shows/breaking-bad-s1-disc1.yaml`, `configs/movies/hudson-hawk-1991.yaml`.
 
 When local output includes the show name but NAS uses `Season N` only:
 
@@ -492,6 +730,10 @@ nas:
 post:
   eject: true
   copy_to_nas: true
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng              # English films; use original lang for foreign films
+  # omit subtitle_default → no forced default subtitles
 title_selection:
   mode: auto_feature              # pick longest feature title
   min_duration_sec: 4800
@@ -1501,7 +1743,7 @@ Resume: `scripts/videosripper rip configs/movies/scarface-1983.yaml`
 | Wrong episode names | Re-scan disc; fix manifest `tracks[]`; do not guess from prior disc |
 | Home disk full | Ensure output/staging stay on `/mnt/game1` (1.5 TB free) |
 | Plex wrong episode metadata | Use DVD-order `Nx##` filenames + set Plex episode ordering to **DVD** |
-| Two rips on same drive | Never run parallel `videosripper rip` / `makemkvcon mkv` on `/dev/sr0`; CLI warns `=== ALERT === DUPLICATE MAKEKV` |
+| Two rips on same drive | Never run parallel `videosripper rip` / `makemkvcon mkv` on the **same** `/dev/srN`; per-drive `makemkv-<slug>` lock serializes it, CLI warns `=== ALERT === DUPLICATE MAKEKV`. Parallel rips across **different** drives are supported (`--auto` / `--device`). |
 | Disc ejected during scan | Scan/dry-run/validate never eject; successful real `rip` with `post.eject: true` ejects on success; exhausted disc-open/stall retries also eject for inspection — re-insert before re-running |
 | `Failed to open disc` / makemkv exit 11 / TCOUNT:0 | Auto-retries **3 times** (30s delay) by default = 4 total attempts; on exhaustion: `USER INTERVENTION REQUIRED`, auto-eject, exit non-zero — clean/re-seat, re-insert, re-run |
 | Rip hangs (no PRGV, drive LED stuck) | Stall kills makemkv (`--on-stall exit`); default retries same title up to `retry.count` (3); on exhaustion ejects + requires intervention; increase `VIDEOSRIPPER_STALL_TIMEOUT_SEC` for slow BD; resume with `--start-at N` |
