@@ -22,6 +22,10 @@ ALERT_PREFIX = "=== ALERT ==="
 _MSG_RE = re.compile(r'^MSG:(\d+),\d+,\d+,"([^"]*)"')
 _TCOUNT_RE = re.compile(r"^TCOUNT:(\d+)")
 _PRGV_RE = re.compile(r"^PRGV:")
+# PRGV:current,total,max — current bar, total(overall) bar, constant max.
+# Only emitted when makemkvcon runs with a --progress target (e.g.
+# --progress=-same); default robot mode prints none.
+_PRGV_VALUES_RE = re.compile(r"^PRGV:(\d+),(\d+),(\d+)")
 
 # MakeMKV exit 11 = failed to open disc (common when drive loses the disc).
 _EXIT_DISC_OPEN = 11
@@ -395,3 +399,117 @@ _PROGRESS_LINE_CHECKS: tuple[Callable[[str], bool], ...] = (
 def is_progress_line(line: str) -> bool:
     stripped = line.strip()
     return any(check(stripped) for check in _PROGRESS_LINE_CHECKS)
+
+
+def is_save_phase_line(line: str) -> bool:
+    """True once MakeMKV enters title-save (after open/analyze).
+
+    Open/scan often ends a phase with ``PRGV:max,max,max`` (100% on the
+    overall bar) before real MKV write progress begins. Percent logging should
+    wait for ``MSG:5014`` / ``PRGT`` Saving (or the human "Saving N titles…"
+    line) so those boundary spikes never become ``RIP title N — 100%``.
+    """
+    stripped = line.strip()
+    if stripped.startswith("MSG:5014"):
+        return True
+    if stripped.startswith("PRGT:") and "Saving" in stripped:
+        return True
+    return _is_save_titles_line(stripped)
+
+
+def parse_prgv(line: str) -> tuple[int, int, int] | None:
+    """Parse a MakeMKV robot-mode ``PRGV:current,total,max`` line.
+
+    ``current`` is the current-operation bar, ``total`` is the overall-task bar,
+    and ``max`` is the constant full-scale value. Returns ``None`` for non-PRGV
+    lines (only appears when makemkv runs with ``--progress``).
+    """
+    m = _PRGV_VALUES_RE.match(line.strip())
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+
+
+def prgv_percent(line: str) -> int | None:
+    """Return overall rip percent (0-100) from a PRGV line, or ``None``.
+
+    Uses the ``total`` (overall-task) bar over ``max`` — for a single-title
+    ``mkv`` rip this climbs 0→100 across the whole title. Guards ``max<=0``.
+    """
+    parsed = parse_prgv(line)
+    if parsed is None:
+        return None
+    _current, total, maximum = parsed
+    if maximum <= 0:
+        return None
+    pct = int(100 * total / maximum)
+    return max(0, min(100, pct))
+
+
+# Early PRGV samples swing wildly; wait for a decile and ~30s of wall time.
+_ETA_MIN_PCT = 10
+_ETA_MIN_ELAPSED_SEC = 30.0
+
+
+def estimate_eta_sec(
+    pct: int,
+    elapsed: float,
+    *,
+    min_pct: int = _ETA_MIN_PCT,
+    min_elapsed: float = _ETA_MIN_ELAPSED_SEC,
+) -> int | None:
+    """Rough seconds remaining from percent-complete rate, or ``None`` if unstable.
+
+    Extrapolates ``elapsed * (100 - pct) / pct``. Returns ``None`` until
+    ``pct >= min_pct`` and ``elapsed >= min_elapsed`` (early samples are noisy),
+    and when pct is outside (0, 100).
+    """
+    if pct < min_pct or pct >= 100 or pct <= 0:
+        return None
+    if elapsed < min_elapsed:
+        return None
+    return int(elapsed * (100 - pct) / pct)
+
+
+def format_eta_remaining(eta_sec: int | None) -> str | None:
+    """Human-readable ETA fragment: ``~14m``, ``~1h05m``, ``<1m``, or ``None``."""
+    if eta_sec is None:
+        return None
+    if eta_sec < 60:
+        return "<1m"
+    hours, rem = divmod(int(eta_sec), 3600)
+    minutes = rem // 60
+    if hours:
+        return f"~{hours}h{minutes:02d}m"
+    return f"~{minutes}m"
+
+
+@dataclass
+class RipDecileTracker:
+    """Throttle PRGV percents to one milestone per rising 10% step.
+
+    ``milestone_for(pct)`` returns 10/20/…/100 the first time each decile is
+    crossed and ``None`` otherwise, so pipeline.log stays at ≤10 progress lines
+    per title and oscillation near a boundary never double-logs. 0% is skipped
+    (the ``ripping 1/1`` line already marks the start).
+
+    MakeMKV often emits ``PRGV:65536,65536,65536`` at phase boundaries before
+    real save progress. 100% is withheld until at least one mid-decile (10–90)
+    has been logged, so a first-sample full bar cannot lock the tracker or
+    print a false ``RIP title N — 100%``.
+    """
+
+    _last_decile: int = field(default=-1, init=False)
+
+    def milestone_for(self, pct: int) -> int | None:
+        if pct < 0:
+            return None
+        decile = min(pct, 100) // 10
+        if decile <= self._last_decile:
+            return None
+        # Never treat 100% as the first progress sample for a title.
+        if decile == 10 and self._last_decile < 1:
+            return None
+        self._last_decile = decile
+        milestone = decile * 10
+        return milestone if milestone > 0 else None

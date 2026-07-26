@@ -19,9 +19,15 @@ from videosripper.logging_setup import (
     INSERT_STEPS,
     PROCESS_INSERT,
     PROCESS_RIP,
+    RIP_STEP_DONE,
+    RIP_STEP_RESCAN,
+    RIP_STEP_RIP,
+    RIP_STEP_VALIDATE,
+    RIP_STEP_VERIFY,
     RIP_STEPS,
     log_progress,
     log_stage,
+    process_elapsed,
     setup_pipeline_logger,
 )
 from videosripper.map_agent import run_map_agent
@@ -367,6 +373,29 @@ def move_manifest_yaml(yaml_path: Path, dest_dir: Path, *, reason: str = "") -> 
     return dest
 
 
+def _log_identify(pending: PendingDisc) -> None:
+    """Unnumbered ``[insert] IDENTIFY`` line: what the bdmt/runtime hints produced.
+
+    Identification runs inside :func:`step_write_pending`; without this line a
+    generic-label disc silently jumped from SCAN to PENDING with no trace of why
+    the map agent got (or didn't get) a real title.
+    """
+    ident = pending.scan_data.get("identification") or {}
+    if not ident:
+        return
+    candidates = ident.get("candidates") or []
+    bits = [
+        f"label={pending.disc_name!r}",
+        f"generic={bool(ident.get('is_generic_label'))}",
+        f"bdmt={ident.get('bluray_title') or '-'}",
+        f"candidates={len(candidates)}",
+    ]
+    duration = ident.get("feature_duration_sec")
+    if duration:
+        bits.append(f"feature={duration}s")
+    log_stage("IDENTIFY", process=PROCESS_INSERT, detail=" ".join(bits))
+
+
 def handle_disc_insert(
     device: str,
     minlength: int,
@@ -400,6 +429,7 @@ def handle_disc_insert(
     )
 
     pending = step_write_pending(scan_data, device=device, minlength=minlength)
+    _log_identify(pending)
     log_stage(
         "PENDING",
         process=PROCESS_INSERT,
@@ -487,6 +517,12 @@ def handle_disc_insert(
     )
 
 
+def _total_suffix() -> str:
+    """`` total=1h02m09s`` since [rip 1/7], or ``""`` when step 1 wasn't logged here."""
+    total = process_elapsed(PROCESS_RIP)
+    return f" total={total}" if total else ""
+
+
 def _manifest_label(manifest: TvDiscManifest | MovieManifest) -> str:
     return (
         getattr(manifest.meta, "title", None)
@@ -506,7 +542,7 @@ def _verify_and_rip(
     log_stage(
         "VERIFY",
         process=PROCESS_RIP,
-        step=3,
+        step=RIP_STEP_VERIFY,
         total=RIP_STEPS,
         detail=f"disc={scan_data.get('disc_name', '?')} vs manifest={label} ({yaml_path.name})",
     )
@@ -526,7 +562,7 @@ def _verify_and_rip(
     log_stage(
         "RIP",
         process=PROCESS_RIP,
-        step=4,
+        step=RIP_STEP_RIP,
         total=RIP_STEPS,
         detail=f"{label} ({track_total} track(s)) dev={manifest.meta.device}",
     )
@@ -537,15 +573,18 @@ def _verify_and_rip(
         log_stage(
             "DONE",
             process=PROCESS_RIP,
-            step=5,
+            step=RIP_STEP_DONE,
             total=RIP_STEPS,
-            detail=f"{label} ({yaml_path.name} -> staging/done)",
+            detail=(
+                f"{label} ({yaml_path.name} -> staging/done; copy/eject above)"
+                f"{_total_suffix()}"
+            ),
         )
         return StepResult(name="process_ready", ok=True, message="ripped")
 
     move_manifest_yaml(yaml_path, FAILED_DIR, reason=rip.message)
     logger.error("Rip failed for %s: %s", yaml_path.name, rip.message)
-    log_stage("RIP_FAILED", process=PROCESS_RIP, detail=rip.message)
+    log_stage("RIP_FAILED", process=PROCESS_RIP, detail=f"{rip.message}{_total_suffix()}")
     return rip
 
 
@@ -557,7 +596,7 @@ def _load_ready_manifest(
     log_stage(
         "VALIDATE",
         process=PROCESS_RIP,
-        step=1,
+        step=RIP_STEP_VALIDATE,
         total=RIP_STEPS,
         detail=yaml_path.name,
     )
@@ -604,7 +643,7 @@ def process_ready_manifest(
         log_stage(
             "RESCAN",
             process=PROCESS_RIP,
-            step=2,
+            step=RIP_STEP_RESCAN,
             total=RIP_STEPS,
             detail=f"{label} dev={manifest.meta.device}",
         )
@@ -668,7 +707,7 @@ def run_device_worker_once(device: str, logger: logging.Logger) -> StepResult:
         log_stage(
             "CLAIM",
             process=PROCESS_RIP,
-            step=1,
+            step=RIP_STEP_VALIDATE,
             total=RIP_STEPS,
             detail=f"{yaml_path.name} claimed by dev={device} (disc={scan_data.get('disc_name', '?')})",
         )
@@ -682,7 +721,7 @@ def run_device_worker_once(device: str, logger: logging.Logger) -> StepResult:
         log_stage(
             "RESCAN",
             process=PROCESS_RIP,
-            step=2,
+            step=RIP_STEP_RESCAN,
             total=RIP_STEPS,
             detail=f"{label} dev={device}",
         )

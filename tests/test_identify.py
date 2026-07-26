@@ -46,17 +46,39 @@ def test_parse_bdmt_xml(tmp_path: Path) -> None:
     assert identify.parse_bdmt_xml(xml) == "Hudson Hawk"
 
 
-def test_read_bluray_title_from_mount(tmp_path: Path) -> None:
-    dl = tmp_path / "BDMV" / "META" / "DL"
-    dl.mkdir(parents=True)
-    (dl / "bdmt_eng.xml").write_text(
-        '<?xml version="1.0"?><root xmlns:di="urn:BDA:bdmv;discinfo">'
-        "<di:name>Scarface</di:name></root>",
-        encoding="utf-8",
+def test_read_bluray_title_uses_tmp_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Identify mount workdirs must land under TMP_ROOT, not /tmp tmpfs."""
+    tmp_root = tmp_path / ".tmp"
+    tmp_root.mkdir()
+    monkeypatch.setattr(identify, "ensure_tmp_root", lambda: tmp_root)
+
+    created: list[Path] = []
+
+    class FakeTempDir:
+        def __init__(self, *args, **kwargs):
+            assert kwargs.get("dir") == tmp_root
+            self.path = tmp_root / "videosripper-bdmt-test"
+            self.path.mkdir()
+            created.append(self.path)
+
+        def __enter__(self):
+            return str(self.path)
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(identify.tempfile, "TemporaryDirectory", FakeTempDir)
+    monkeypatch.setattr(identify, "disc_dev", lambda _d: "/dev/null")
+    monkeypatch.setattr(
+        identify,
+        "mount_optical_readonly",
+        lambda _dev, mp: (False, None),
     )
-    title, source = identify.read_bluray_title_from_mount(tmp_path)
-    assert title == "Scarface"
-    assert source and "bdmt_eng.xml" in source
+    title, source = identify.read_bluray_title("dev:/dev/null")
+    assert title is None and source is None
+    assert created and created[0].is_relative_to(tmp_root)
 
 
 def test_lookup_tmdb_by_runtime(monkeypatch: pytest.MonkeyPatch) -> None:

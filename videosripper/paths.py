@@ -8,6 +8,8 @@ from pathlib import Path
 ROOT = Path(os.environ.get("VIDEOSRIPPER_ROOT", "/mnt/game1/VideosRipper"))
 OUTPUT_ROOT = Path(os.environ.get("VIDEOSRIPPER_OUTPUT", ROOT / "output"))
 STAGING_ROOT = Path(os.environ.get("VIDEOSRIPPER_STAGING", ROOT / "staging"))
+# Ephemeral work on the game drive — not the 32G /tmp tmpfs. Override with VIDEOSRIPPER_TMP.
+TMP_ROOT = Path(os.environ.get("VIDEOSRIPPER_TMP", ROOT / ".tmp"))
 LOG_ROOT = Path(os.environ.get("VIDEOSRIPPER_LOGS", ROOT / "logs"))
 NAS_SHARE = Path(
     os.environ.get("VIDEOSRIPPER_NAS", "/mnt/tn-sas/Anime/Spongebob Squarepants")
@@ -24,6 +26,12 @@ def resolve_path(value: str | Path, base: Path | None = None) -> Path:
         return path
     root = base or ROOT
     return root / path
+
+
+def ensure_tmp_root() -> Path:
+    """Create and return TMP_ROOT (game-drive temp; never rely on /tmp tmpfs)."""
+    TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    return TMP_ROOT
 
 
 def disc_dev(device: str) -> str:

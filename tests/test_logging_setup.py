@@ -232,6 +232,11 @@ def test_constants() -> None:
     assert logging_setup.BACKUP_COUNT == 2
     assert logging_setup.ERROR_LOG.name == "error.log"
     assert logging_setup.PIPELINE_LOG.name == "pipeline.log"
+    assert logging_setup.INSERT_STEPS == 5
+    assert logging_setup.RIP_STEPS == 7
+    assert logging_setup.RIP_STEP_COPY == 5
+    assert logging_setup.RIP_STEP_EJECT == 6
+    assert logging_setup.RIP_STEP_DONE == 7
 
 
 def test_log_stage_and_progress_write_pipeline_log(
@@ -268,13 +273,13 @@ def test_log_stage_process_prefix_distinguishes_insert_vs_rip(
     _patch_log_paths(monkeypatch, log_root)
 
     logging_setup.log_stage("SCAN", process="insert", step=1, total=5)
-    logging_setup.log_stage("CLAIM", process="rip", step=1, total=5)
+    logging_setup.log_stage("CLAIM", process="rip", step=1, total=7)
     logging_setup.log_stage("SCAN_FAILED", process="insert", detail="boom")
     logging_setup.log_stage("WATCHERS_UP", detail="idle")
 
     lines = (log_root / "pipeline.log").read_text(encoding="utf-8").splitlines()
     assert "STAGE [insert 1/5] SCAN" in lines[0]
-    assert "STAGE [rip 1/5] CLAIM" in lines[1]
+    assert "STAGE [rip 1/7] CLAIM" in lines[1]
     assert "STAGE [insert] SCAN_FAILED" in lines[2]
     assert "STAGE WATCHERS_UP" in lines[3]
     assert "[1/5]" not in lines[3]  # status stages have no N/M
@@ -310,12 +315,79 @@ def test_log_stage_appends_elapsed_since_previous_stage(
     fake_now[0] = 137.0
     logging_setup.log_stage("PENDING", process="insert", step=2, total=5)
     fake_now[0] = 137.0 + 3 * 60 + 7
-    logging_setup.log_stage("DONE", process="rip", step=5, total=5)
+    logging_setup.log_stage("DONE", process="rip", step=7, total=7)
 
     lines = (log_root / "pipeline.log").read_text(encoding="utf-8").splitlines()
     assert "SCAN" in lines[0] and "[+" not in lines[0]
     assert lines[1].endswith("=== [+37s]")
     assert lines[2].endswith("=== [+3m07s]")
+
+
+def test_log_copy_eject_remux_helpers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    log_root = tmp_path / "logs"
+    _patch_log_paths(monkeypatch, log_root)
+
+    dest = "/mnt/tn-sas/Movies/Scarface (1983).mkv"
+    logging_setup.log_remux_stage("stream_defaults audio=eng subtitle=cleared — title_t00.mkv")
+    logging_setup.log_copy_start("Scarface (1983).mkv", dest, numbered=True)
+    logging_setup.log_copy_result(True, "Scarface (1983).mkv", dest)
+    logging_setup.log_eject_stage("/dev/sr0", ok=True)
+    logging_setup.log_rip_stage("DONE", logging_setup.RIP_STEP_DONE, "Scarface done")
+
+    text = (log_root / "pipeline.log").read_text(encoding="utf-8")
+    assert "STAGE [rip] REMUX — stream_defaults audio=eng subtitle=cleared — title_t00.mkv" in text
+    assert "STAGE [rip 5/7] COPY — start Scarface (1983).mkv → /mnt/tn-sas/Movies/Scarface (1983).mkv" in text
+    assert "STAGE [rip] COPY_OK — Scarface (1983).mkv → /mnt/tn-sas/Movies/Scarface (1983).mkv" in text
+    assert "STAGE [rip 6/7] EJECT — ok /dev/sr0" in text
+    assert "STAGE [rip 7/7] DONE — Scarface done" in text
+
+    logging_setup.log_copy_skipped("post.copy_to_nas: false")
+    logging_setup.log_eject_stage("/dev/sr0", skipped="post.eject: false")
+    logging_setup.log_copy_summary(3, 1, "/mnt/tn-sas/Shows/Breaking Bad")
+    logging_setup.log_copy_result(False, "bad.mkv", "/mnt/x/bad.mkv")
+    text2 = (log_root / "pipeline.log").read_text(encoding="utf-8")
+    assert "STAGE [rip 5/7] COPY — skipped (post.copy_to_nas: false)" in text2
+    assert "STAGE [rip 6/7] EJECT — skipped (post.eject: false)" in text2
+    assert "STAGE [rip 5/7] COPY — 3 ok, 1 failed → /mnt/tn-sas/Shows/Breaking Bad" in text2
+    assert "STAGE [rip] COPY_FAILED — bad.mkv → /mnt/x/bad.mkv" in text2
+
+
+def test_process_elapsed_measures_from_step_one(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """DONE needs total rip time — ``[+…]`` after EJECT would only show a second."""
+    log_root = tmp_path / "logs"
+    _patch_log_paths(monkeypatch, log_root)
+    monkeypatch.setattr(logging_setup, "_process_started", {})
+
+    fake_now = [500.0]
+    monkeypatch.setattr(logging_setup.time, "monotonic", lambda: fake_now[0])
+
+    assert logging_setup.process_elapsed(logging_setup.PROCESS_RIP) is None
+    logging_setup.log_rip_stage("CLAIM", logging_setup.RIP_STEP_VALIDATE, "movie.yaml")
+    fake_now[0] = 500.0 + 28 * 60 + 5
+    logging_setup.log_eject_stage("/dev/sr0", ok=True)  # step 6 must not reset the clock
+
+    assert logging_setup.process_elapsed(logging_setup.PROCESS_RIP) == "28m05s"
+    assert logging_setup.process_elapsed(logging_setup.PROCESS_INSERT) is None
+
+
+def test_rip_done_line_carries_total_elapsed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from videosripper import pipeline
+
+    log_root = tmp_path / "logs"
+    _patch_log_paths(monkeypatch, log_root)
+    monkeypatch.setattr(logging_setup, "_process_started", {})
+
+    fake_now = [10.0]
+    monkeypatch.setattr(logging_setup.time, "monotonic", lambda: fake_now[0])
+    logging_setup.log_rip_stage("CLAIM", logging_setup.RIP_STEP_VALIDATE, "movie.yaml")
+    fake_now[0] = 10.0 + 75
+    assert pipeline._total_suffix() == " total=1m15s"
 
 
 def test_format_elapsed() -> None:

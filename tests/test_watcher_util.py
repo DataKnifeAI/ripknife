@@ -171,3 +171,163 @@ def test_scan_device_dict_returns_large_scan_summary(monkeypatch: pytest.MonkeyP
     assert len(data["titles"]) == 330
     assert data["titles"][0]["index"] == 0
     assert data["titles"][-1]["index"] == 329
+
+
+def test_touch_heartbeat_writes_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state_path = tmp_path / "watcher-state.json"
+    monkeypatch.setattr(watcher_util, "STATE_PATH", state_path)
+    monkeypatch.setattr(watcher_util.os, "getpid", lambda: 4242)
+
+    watcher_util.touch_heartbeat("disc-watcher", extra={"disc_present": True})
+
+    state = watcher_util.read_state()
+    hb = state["heartbeat:disc-watcher"]
+    assert hb["status"] == "alive"
+    assert hb["pid"] == 4242
+    assert hb["disc_present"] is True
+    assert "updated_at" in hb
+
+
+def test_log_watcher_crash_writes_pipeline_stage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import logging
+
+    from videosripper import logging_setup, paths
+
+    log_root = tmp_path / "logs"
+    monkeypatch.setattr(paths, "LOG_ROOT", log_root)
+    monkeypatch.setattr(logging_setup, "LOG_ROOT", log_root)
+    monkeypatch.setattr(logging_setup, "PIPELINE_LOG", log_root / "pipeline.log")
+    monkeypatch.setattr(logging_setup, "ERROR_LOG", log_root / "error.log")
+    monkeypatch.setattr(watcher_util, "ERROR_LOG", log_root / "error.log")
+    if logging_setup._error_handler is not None:
+        logging_setup._error_handler.close()
+        logging_setup._error_handler = None
+    pl = logging.getLogger(logging_setup._PIPELINE_LOGGER_NAME)
+    for handler in pl.handlers[:]:
+        pl.removeHandler(handler)
+        handler.close()
+    monkeypatch.setattr(logging_setup, "_last_stage_monotonic", None)
+
+    logger = logging.getLogger("test-watcher-crash")
+    logger.handlers.clear()
+    logger.addHandler(logging.NullHandler())
+    logger.setLevel(logging.ERROR)
+
+    try:
+        raise RuntimeError("boom")
+    except RuntimeError as exc:
+        watcher_util.log_watcher_crash("disc-watcher:sr0", logger, exc)
+
+    text = (log_root / "pipeline.log").read_text(encoding="utf-8")
+    assert "STAGE WATCHER_CRASH" in text
+    assert "disc-watcher:sr0" in text
+    assert "RuntimeError: boom" in text
+    err = (log_root / "error.log").read_text(encoding="utf-8")
+    assert "WATCHER_CRASH — disc-watcher:sr0" in err
+    assert "RuntimeError: boom" in err
+
+
+def test_run_resilient_loop_restarts_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    import logging
+
+    calls = {"n": 0}
+    logged: list[str] = []
+
+    def fake_crash(name, logger, exc):
+        logged.append(f"{name}:{type(exc).__name__}")
+
+    monkeypatch.setattr(watcher_util, "log_watcher_crash", fake_crash)
+    monkeypatch.setattr(watcher_util.time, "sleep", lambda _s: None)
+    watcher_util.clear_shutdown()
+
+    def flaky() -> str:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ValueError("transient")
+        return "ok"
+
+    logger = logging.getLogger("test-resilient")
+    assert watcher_util.run_resilient_loop("worker", logger, flaky, restart_sec=0) == "ok"
+    assert calls["n"] == 3
+    assert logged == ["worker:ValueError", "worker:ValueError"]
+
+
+def test_install_watcher_signal_handlers_logs_stopped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import logging
+    import signal
+
+    from videosripper import logging_setup, paths
+
+    log_root = tmp_path / "logs"
+    monkeypatch.setattr(paths, "LOG_ROOT", log_root)
+    monkeypatch.setattr(logging_setup, "LOG_ROOT", log_root)
+    monkeypatch.setattr(logging_setup, "PIPELINE_LOG", log_root / "pipeline.log")
+    pl = logging.getLogger(logging_setup._PIPELINE_LOGGER_NAME)
+    for handler in pl.handlers[:]:
+        pl.removeHandler(handler)
+        handler.close()
+    monkeypatch.setattr(logging_setup, "_last_stage_monotonic", None)
+    watcher_util.clear_shutdown()
+
+    logger = logging.getLogger("test-sig")
+    logger.handlers.clear()
+    logger.addHandler(logging.NullHandler())
+
+    # Save and restore previous handlers so other tests / pytest aren't affected.
+    prev_term = signal.getsignal(signal.SIGTERM)
+    prev_int = signal.getsignal(signal.SIGINT)
+    try:
+        watcher_util.install_watcher_signal_handlers("disc-watcher", logger)
+        with pytest.raises(SystemExit) as ei:
+            signal.raise_signal(signal.SIGTERM)
+        assert ei.value.code == 0
+        assert watcher_util.shutdown_requested()
+    finally:
+        signal.signal(signal.SIGTERM, prev_term)
+        signal.signal(signal.SIGINT, prev_int)
+        watcher_util.clear_shutdown()
+
+    text = (log_root / "pipeline.log").read_text(encoding="utf-8")
+    assert "STAGE WATCHER_STOPPED" in text
+    assert "disc-watcher received SIGTERM" in text
+
+
+def test_touch_heartbeat_includes_heartbeat_at(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    state_path = tmp_path / "watcher-state.json"
+    monkeypatch.setattr(watcher_util, "STATE_PATH", state_path)
+    watcher_util.touch_heartbeat("rip-watcher")
+    hb = watcher_util.read_state()["heartbeat:rip-watcher"]
+    assert "heartbeat_at" in hb
+    assert "T" in hb["heartbeat_at"]
+
+
+def test_concurrent_update_state_does_not_raise(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Two writers must not crash on shared ``.json.tmp`` replace races."""
+    import threading
+
+    state_path = tmp_path / "watcher-state.json"
+    monkeypatch.setattr(watcher_util, "STATE_PATH", state_path)
+    errors: list[BaseException] = []
+
+    def writer(name: str) -> None:
+        try:
+            for i in range(40):
+                watcher_util.update_state(name, {"n": i})
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=writer, args=("a",)),
+        threading.Thread(target=writer, args=("b",)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10.0)
+    assert errors == []
+    state = watcher_util.read_state()
+    assert "a" in state and "b" in state

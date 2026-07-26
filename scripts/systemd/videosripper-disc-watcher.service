@@ -1,0 +1,37 @@
+# VideosRipper disc-watcher (Process 1) — systemd user unit
+#
+# Install (once):
+#   mkdir -p ~/.config/systemd/user
+#   cp /mnt/game1/VideosRipper/scripts/systemd/*.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   loginctl enable-linger "$USER"   # keep running after logout
+#   systemctl --user enable --now videosripper-disc-watcher.service
+#   systemctl --user enable --now videosripper-rip-watcher.service
+#
+# Status / logs:
+#   systemctl --user status videosripper-disc-watcher videosripper-rip-watcher
+#   journalctl --user -u videosripper-disc-watcher -f
+#
+# Make targets (watch-all / watch-stop) still work; do not run both at once
+# (flock singleton locks will refuse the second instance).
+
+[Unit]
+Description=VideosRipper disc-watcher (optical insert → scan/map)
+After=default.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/game1/VideosRipper
+Environment=PYTHONUNBUFFERED=1
+# Source MakeMKV library path if present
+EnvironmentFile=-%h/.config/environment.d/makemkv.conf
+ExecStart=/mnt/game1/VideosRipper/.venv/bin/python /mnt/game1/VideosRipper/scripts/disc-watcher.py --auto
+Restart=always
+RestartSec=10
+# Kill only this service's main process; leave orphaned makemkvcon alone if any.
+KillMode=process
+
+[Install]
+WantedBy=default.target

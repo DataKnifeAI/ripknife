@@ -9,12 +9,19 @@ import tempfile
 from pathlib import Path
 
 from videosripper import ffmpeg_ops
-from videosripper.logging_setup import log_debug
+from videosripper.logging_setup import (
+    log_copy_result,
+    log_copy_skipped,
+    log_copy_start,
+    log_debug,
+    log_eject_stage,
+    log_remux_stage,
+)
 from videosripper.makemkv import TitleInfo, pick_feature_title, rip_title, scan
 from videosripper.models import MovieManifest, movie_output_path
 from videosripper.monitor import MonitorSettings, preflight_disc_open, warn_duplicate_makemkv
 from videosripper.nas import copy_movie_to_share, eject_disc
-from videosripper.paths import STAGING_ROOT, disc_dev, resolve_path
+from videosripper.paths import MOVIES_NAS, STAGING_ROOT, disc_dev, resolve_path
 from videosripper.post_rip_verify import (
     log_verify_failure,
     verify_output,
@@ -34,6 +41,10 @@ def _postprocess_ripped(ripped: Path, staging: Path, manifest: MovieManifest) ->
     sd = manifest.stream_defaults
     if not sd.audio_default and not sd.subtitle_default:
         return ripped
+    sub = sd.subtitle_default or "cleared"
+    log_remux_stage(
+        f"stream_defaults audio={sd.audio_default} subtitle={sub} — {ripped.name}"
+    )
     processed = staging / f".defaults_{ripped.stem}.mkv"
     return ffmpeg_ops.apply_stream_defaults_or_keep(
         ripped,
@@ -228,6 +239,9 @@ def rip_movie(
     if out_path.is_file():
         if out_path.stat().st_size >= rules.min_size_bytes:
             logger.info("Output already exists and looks valid — skipping rip.")
+            # Still close steps 5/7 and 6/7 so DONE never follows a gap in numbering.
+            log_copy_skipped("local output already complete")
+            log_eject_stage(dev_block, skipped="rip skipped (output exists)")
             return
         logger.info("Removing prior bad rip (%s bytes)", out_path.stat().st_size)
         out_path.unlink()
@@ -268,6 +282,10 @@ def rip_movie(
             detail=f"done 1/1: title {title} → {out_path.name}",
         )
         if manifest.nas.movies and manifest.post.copy_to_nas:
+            base = movies_nas or MOVIES_NAS
+            dest_dir = base / manifest.nas.subdir if manifest.nas.subdir else base
+            dest = dest_dir / out_path.name
+            log_copy_start(out_path.name, dest, numbered=True)
             nas_ok = copy_movie_to_share(
                 out_path,
                 manifest.nas.subdir,
@@ -275,10 +293,17 @@ def rip_movie(
                 retries=retry_cfg.nas_retries,
                 delay_sec=retry_cfg.delay_sec,
             )
+            log_copy_result(nas_ok, out_path.name, dest)
         elif manifest.nas.movies:
             logger.info("NAS copy: skipped (post.copy_to_nas: false)")
+            log_copy_skipped("post.copy_to_nas: false")
+        else:
+            log_copy_skipped("no nas.movies path")
         if manifest.post.eject:
             ejected = eject_disc(dev_block)
+            log_eject_stage(dev_block, ok=ejected)
+        else:
+            log_eject_stage(dev_block, skipped="post.eject: false")
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 

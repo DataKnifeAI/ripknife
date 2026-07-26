@@ -9,12 +9,19 @@ SHOWS_NAS="${VIDEOSRIPPER_SHOWS_NAS:-/mnt/tn-sas/Shows}"
 MOVIES_NAS="${VIDEOSRIPPER_MOVIES_NAS:-/mnt/tn-sas/Movies}"
 OUTPUT_ROOT="${VIDEOSRIPPER_OUTPUT:-${VIDEOSRIPPER_ROOT}/output}"
 STAGING_ROOT="${VIDEOSRIPPER_STAGING:-${VIDEOSRIPPER_ROOT}/staging}"
+# Ephemeral work on the game drive — not the 32G /tmp tmpfs.
+TMP_ROOT="${VIDEOSRIPPER_TMP:-${VIDEOSRIPPER_ROOT}/.tmp}"
 LOG_ROOT="${VIDEOSRIPPER_LOGS:-${VIDEOSRIPPER_ROOT}/logs}"
 SCRIPTS_ROOT="${VIDEOSRIPPER_SCRIPTS:-${VIDEOSRIPPER_ROOT}/scripts}"
 
 videosripper_staging_dir() {
   mkdir -p "$STAGING_ROOT"
   mktemp -d "${STAGING_ROOT}/.rip.XXXXXX"
+}
+
+videosripper_tmp_dir() {
+  mkdir -p "$TMP_ROOT"
+  mktemp -d "${TMP_ROOT}/.work.XXXXXX"
 }
 
 copy_episode_to_share() {

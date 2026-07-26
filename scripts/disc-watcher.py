@@ -25,14 +25,19 @@ from videosripper.paths import LOG_ROOT  # noqa: E402
 from videosripper.pipeline import handle_disc_insert  # noqa: E402
 from videosripper.watcher_util import (  # noqa: E402
     flock,
+    install_watcher_signal_handlers,
     media_present,
+    run_resilient_loop,
     scan_lock_path,
     setup_watcher_logger,
+    shutdown_requested,
+    touch_heartbeat,
     update_state,
     watcher_lock_path,
 )
 
 LOG_FILE = LOG_ROOT / "disc-watcher.log"
+WATCHER_NAME = "disc-watcher"
 
 
 def parse_args() -> argparse.Namespace:
@@ -88,9 +93,10 @@ def _poll_loop(device: str, args: argparse.Namespace, logger) -> int:
         log_stage("DISC_DETECTED", detail=f"device={device} (present at startup); debouncing {args.debounce_sec:.0f}s")
         update_state(section, {"status": "debouncing", "disc_present": True, "device": device})
 
-    while True:
+    while not shutdown_requested():
         present = media_present(device)
         now = time.monotonic()
+        touch_heartbeat(WATCHER_NAME, extra={"device": device, "disc_present": present})
 
         if present and not was_present:
             debounce_started = now
@@ -111,27 +117,60 @@ def _poll_loop(device: str, args: argparse.Namespace, logger) -> int:
             update_state(section, {"status": "idle", "disc_present": False, "device": device})
 
         was_present = present
-        time.sleep(args.poll_sec)
+        # Sleep in slices so SIGTERM is noticed promptly between polls.
+        deadline = time.monotonic() + args.poll_sec
+        while time.monotonic() < deadline and not shutdown_requested():
+            time.sleep(min(1.0, deadline - time.monotonic()))
+    raise SystemExit(0)
 
 
 def _device_worker(device: str, args: argparse.Namespace, logger) -> None:
     lock_name = f"disc-watcher-{device_slug(device)}"
+    worker_name = f"{WATCHER_NAME}:{device_slug(device)}"
     try:
         with flock(watcher_lock_path(lock_name), blocking=False):
-            while True:
-                try:
-                    if _poll_loop(device, args, logger) == 0 and args.once:
-                        return
-                except Exception:
-                    logger.exception("[%s] Disc watcher crashed; restarting in 10s", device)
-                    time.sleep(10.0)
+            # Catch-all around the poll loop so a device thread never dies silently.
+            run_resilient_loop(
+                worker_name,
+                logger,
+                lambda: _poll_loop(device, args, logger),
+                heartbeat_name=WATCHER_NAME,
+            )
     except BlockingIOError:
         logger.error("[%s] Another disc-watcher is already watching this drive", device)
+    except SystemExit:
+        raise
+
+
+def _supervise_threads(threads: list[threading.Thread], logger) -> None:
+    """Join workers; if a non-daemon exit leaves us idle, log and keep waiting.
+
+    Device workers are intended never to exit (except --once / lock conflict).
+    Daemon threads dying on an uncaught error would otherwise leave main blocked
+    forever with no work happening — resilient wrappers should prevent that, but
+    we still wake periodically to refresh the process heartbeat.
+    """
+    try:
+        while not shutdown_requested():
+            alive = [t for t in threads if t.is_alive()]
+            if not alive:
+                logger.error("All disc-watcher device threads exited; process staying up for restart tooling")
+                touch_heartbeat(WATCHER_NAME, extra={"status": "threads_dead"})
+                time.sleep(30.0)
+                continue
+            touch_heartbeat(WATCHER_NAME, extra={"threads_alive": len(alive)})
+            for t in alive:
+                t.join(timeout=30.0)
+    except KeyboardInterrupt:
+        logger.info("Disc watcher interrupted; exiting")
+        raise SystemExit(0)
+    raise SystemExit(0)
 
 
 def main() -> int:
     args = parse_args()
-    logger = setup_watcher_logger("disc-watcher", LOG_FILE)
+    logger = setup_watcher_logger(WATCHER_NAME, LOG_FILE)
+    install_watcher_signal_handlers(WATCHER_NAME, logger)
     devices = resolve_watch_devices(args.devices, auto=args.auto)
     logger.info(
         "Disc watcher started (devices=%s poll=%ss debounce=%ss)",
@@ -139,23 +178,25 @@ def main() -> int:
         args.poll_sec,
         args.debounce_sec,
     )
-    log_watcher_waiting("disc-watcher", devices)
+    log_watcher_waiting(WATCHER_NAME, devices)
+    touch_heartbeat(WATCHER_NAME, extra={"devices": devices})
 
     if len(devices) == 1:
         _device_worker(devices[0], args, logger)
         return 0
 
     threads = [
-        threading.Thread(target=_device_worker, args=(dev, args, logger), name=f"watch-{device_slug(dev)}", daemon=True)
+        threading.Thread(
+            target=_device_worker,
+            args=(dev, args, logger),
+            name=f"watch-{device_slug(dev)}",
+            daemon=True,
+        )
         for dev in devices
     ]
     for t in threads:
         t.start()
-    try:
-        for t in threads:
-            t.join()
-    except KeyboardInterrupt:
-        logger.info("Disc watcher interrupted; exiting")
+    _supervise_threads(threads, logger)
     return 0
 
 

@@ -273,6 +273,10 @@ def setup_pipeline_logger() -> logging.Logger:
 # Monotonic time of the previous log_stage call in this process (None = no stage yet).
 _last_stage_monotonic: float | None = None
 
+# Monotonic start of each named pipeline (set when its step 1 stage is logged) so
+# DONE/FAILED lines can report total wall time, not just time since the last stage.
+_process_started: dict[str, float] = {}
+
 
 def _format_elapsed(seconds: float) -> str:
     """Render an elapsed duration compactly, e.g. ``42s``, ``3m07s``, ``1h02m09s``."""
@@ -288,9 +292,16 @@ def _format_elapsed(seconds: float) -> str:
 
 # Named pipelines so ``[1/5]`` is never ambiguous across Process 1 vs Process 2.
 PROCESS_INSERT = "insert"  # disc-watcher: scan → pending → registry/map
-PROCESS_RIP = "rip"  # rip-watcher: validate/claim → rescan → verify → rip → done
+PROCESS_RIP = "rip"  # rip-watcher: validate/claim → rescan → verify → rip → copy → eject → done
 INSERT_STEPS = 5
-RIP_STEPS = 5
+RIP_STEP_VALIDATE = 1
+RIP_STEP_RESCAN = 2
+RIP_STEP_VERIFY = 3
+RIP_STEP_RIP = 4
+RIP_STEP_COPY = 5
+RIP_STEP_EJECT = 6
+RIP_STEP_DONE = 7
+RIP_STEPS = 7
 
 
 def log_watcher_waiting(watcher: str, devices: list[str] | None = None) -> None:
@@ -320,8 +331,8 @@ def log_stage(
     ``log_stage("SCAN", process="insert", step=1, total=5, detail="device=…")``
     → ``=== STAGE [insert 1/5] SCAN — device=… === [+37s]``
 
-    ``log_stage("RIP", process="rip", step=4, total=5, detail="…")``
-    → ``=== STAGE [rip 4/5] RIP — … ===``
+    ``log_stage("RIP", process="rip", step=4, total=7, detail="…")``
+    → ``=== STAGE [rip 4/7] RIP — … ===``
 
     Status-only stages (WATCHERS_UP, IDLE, WAITING_MANIFEST, DISC_DETECTED) omit
     ``process`` / step — they are outside the numbered insert/rip pipelines.
@@ -337,6 +348,8 @@ def log_stage(
     now = time.monotonic()
     elapsed = "" if _last_stage_monotonic is None else f" [+{_format_elapsed(now - _last_stage_monotonic)}]"
     _last_stage_monotonic = now
+    if process and step == 1:
+        _process_started[process] = now
     if step is not None and total is not None:
         bracket = f"{process} {step}/{total}" if process else f"{step}/{total}"
         prefix = f"=== STAGE [{bracket}] {stage}"
@@ -350,6 +363,69 @@ def log_stage(
     rip = logging.getLogger(_LOGGER_NAME)
     if rip.handlers:
         rip.info("%s", msg)
+
+
+def process_elapsed(process: str) -> str | None:
+    """Formatted wall time since step 1 of ``process`` (None if that step never ran).
+
+    Used by terminal stages (``DONE`` / ``RIP_FAILED``) so one line carries the whole
+    duration of the rip — the trailing ``[+…]`` only covers the previous stage.
+    """
+    started = _process_started.get(process)
+    if started is None:
+        return None
+    return _format_elapsed(time.monotonic() - started)
+
+
+def log_rip_stage(stage: str, step: int, detail: str = "") -> None:
+    """Numbered rip-pipeline stage → pipeline.log."""
+    log_stage(stage, process=PROCESS_RIP, step=step, total=RIP_STEPS, detail=detail)
+
+
+def log_copy_start(src_name: str, dest: Path | str, *, numbered: bool = True) -> None:
+    """NAS copy start. ``numbered=True`` for the sole movie COPY step; TV uses per-file unnumbered."""
+    detail = f"start {src_name} → {dest}"
+    if numbered:
+        log_rip_stage("COPY", RIP_STEP_COPY, detail)
+    else:
+        log_stage("COPY", process=PROCESS_RIP, detail=detail)
+
+
+def log_copy_result(ok: bool, src_name: str, dest: Path | str) -> None:
+    """NAS copy success/fail (unnumbered; follows a COPY start)."""
+    name = "COPY_OK" if ok else "COPY_FAILED"
+    log_stage(name, process=PROCESS_RIP, detail=f"{src_name} → {dest}")
+
+
+def log_copy_skipped(reason: str) -> None:
+    """Numbered COPY stage when NAS copy is disabled or has no destination."""
+    log_rip_stage("COPY", RIP_STEP_COPY, f"skipped ({reason})")
+
+
+def log_copy_summary(ok: int, failed: int, dest_hint: str = "") -> None:
+    """Numbered COPY stage summarizing TV multi-file NAS copies."""
+    detail = f"{ok} ok, {failed} failed"
+    if dest_hint:
+        detail = f"{detail} → {dest_hint}"
+    log_rip_stage("COPY", RIP_STEP_COPY, detail)
+
+
+def log_eject_stage(device: str, *, skipped: str | None = None, ok: bool | None = None) -> None:
+    """Numbered EJECT stage (skipped / start+result via ``ok``)."""
+    if skipped is not None:
+        log_rip_stage("EJECT", RIP_STEP_EJECT, f"skipped ({skipped})")
+        return
+    if ok is True:
+        log_rip_stage("EJECT", RIP_STEP_EJECT, f"ok {device}")
+    elif ok is False:
+        log_rip_stage("EJECT", RIP_STEP_EJECT, f"FAILED {device} — eject manually")
+    else:
+        log_rip_stage("EJECT", RIP_STEP_EJECT, f"start {device}")
+
+
+def log_remux_stage(detail: str) -> None:
+    """stream_defaults ffmpeg remux (unnumbered; runs inside RIP per title)."""
+    log_stage("REMUX", process=PROCESS_RIP, detail=detail)
 
 
 def log_progress(
@@ -370,6 +446,35 @@ def log_progress(
     suffix = f" — {detail}" if detail else ""
     tag = f"[{process}] " if process else ""
     msg = f"  progress {tag}{stage} {current}/{total} ({pct}%){suffix}"
+    logging.getLogger(_PIPELINE_LOGGER_NAME).info("%s", msg)
+    rip = logging.getLogger(_LOGGER_NAME)
+    if rip.handlers:
+        rip.info("%s", msg)
+
+
+def log_rip_percent(
+    pct: int,
+    *,
+    title: int | str | None = None,
+    source: str = "MakeMKV",
+    eta_sec: int | None = None,
+) -> None:
+    """Live within-title rip percent → pipeline.log (+ console).
+
+    Example: ``log_rip_percent(40, title=0, eta_sec=840)``
+    → ``  progress [rip] RIP title 0 — 40% (MakeMKV, ~14m left)``
+
+    Emitted at ~10% steps (see :class:`videosripper.monitor.RipDecileTracker`) so
+    ``tail -F logs/pipeline.log`` shows progress without spamming the overview.
+    ETA is omitted when ``eta_sec`` is ``None`` (unstable early estimate).
+    """
+    from videosripper.monitor import format_eta_remaining
+
+    setup_pipeline_logger()
+    label = f"title {title}" if title is not None else "current title"
+    eta_s = format_eta_remaining(eta_sec)
+    paren = f"{source}, {eta_s} left" if eta_s else source
+    msg = f"  progress [{PROCESS_RIP}] RIP {label} — {pct}% ({paren})"
     logging.getLogger(_PIPELINE_LOGGER_NAME).info("%s", msg)
     rip = logging.getLogger(_LOGGER_NAME)
     if rip.handlers:

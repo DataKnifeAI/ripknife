@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from videosripper.paths import disc_dev
+from videosripper.paths import disc_dev, ensure_tmp_root
 
 logger = logging.getLogger("videosripper")
 
@@ -232,7 +232,10 @@ def read_bluray_title(device: str) -> tuple[str | None, str | None]:
     block = disc_dev(device)
     if not Path(block).exists():
         return None, None
-    with tempfile.TemporaryDirectory(prefix="videosripper-bdmt-") as tmp:
+    # Mount point on TMP_ROOT (game drive), not /tmp tmpfs.
+    with tempfile.TemporaryDirectory(
+        prefix="videosripper-bdmt-", dir=ensure_tmp_root()
+    ) as tmp:
         mountpoint = Path(tmp) / "mnt"
         ok, actual = mount_optical_readonly(device, mountpoint)
         if not ok or actual is None:

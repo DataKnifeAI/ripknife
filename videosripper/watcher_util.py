@@ -7,22 +7,47 @@ import json
 import logging
 import os
 import re
+import signal
 import threading
 import time
+import traceback
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, TypeVar
 
 from videosripper.paths import LOG_ROOT, ROOT, disc_dev
 
 DEFAULT_DEVICE = os.environ.get("VIDEOSRIPPER_DEVICE", "dev:/dev/sr0")
 VIDEOSRIPPER_BIN = ROOT / "scripts" / "videosripper"
 STATE_PATH = LOG_ROOT / "watcher-state.json"
+ERROR_LOG = LOG_ROOT / "error.log"
+HEARTBEAT_SECTION = "heartbeat"
+
+_T = TypeVar("_T")
+
+# Set by SIGTERM/SIGINT so poll loops / backoff can exit without restarting.
+_shutdown = threading.Event()
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def shutdown_requested() -> bool:
+    """True after SIGTERM/SIGINT (or an explicit request_shutdown)."""
+    return _shutdown.is_set()
+
+
+def request_shutdown() -> None:
+    """Mark watchers for clean exit (also used by tests)."""
+    _shutdown.set()
+
+
+def clear_shutdown() -> None:
+    """Reset shutdown flag (tests only)."""
+    _shutdown.clear()
 
 
 def slugify_disc_id(disc_name: str) -> str:
@@ -43,7 +68,110 @@ def setup_watcher_logger(name: str, log_file: Path) -> logging.Logger:
         stream = logging.StreamHandler()
         stream.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         logger.addHandler(stream)
+        # ERROR+ (including logger.exception) also land in logs/error.log
+        from videosripper.logging_setup import _attach_error_handler
+
+        _attach_error_handler(logger)
     return logger
+
+
+def install_watcher_signal_handlers(watcher: str, logger: logging.Logger) -> None:
+    """Log ``WATCHER_STOPPED`` on SIGTERM/SIGINT so session kills are explainable.
+
+    Without this, ``pkill`` / agent-shell process-group teardown kills watchers
+    with no log line — the silent death mode that made 20:12–20:14 hard to debug.
+    """
+
+    def _handler(signum: int, _frame) -> None:
+        try:
+            sig_name = signal.Signals(signum).name
+        except (ValueError, AttributeError):
+            sig_name = str(signum)
+        detail = f"{watcher} received {sig_name}"
+        logger.info("Watcher stopping: %s", detail)
+        try:
+            from videosripper.logging_setup import log_stage
+
+            log_stage("WATCHER_STOPPED", detail=detail)
+        except Exception:  # noqa: BLE001 — shutdown path must not raise
+            pass
+        request_shutdown()
+        # Raise SystemExit so finally/flock cleanup can run on the main thread.
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGINT, _handler)
+
+
+def log_watcher_crash(watcher: str, logger: logging.Logger, exc: BaseException) -> None:
+    """Log full traceback to watcher log + error.log and a STAGE WATCHER_CRASH line."""
+    logger.exception("%s crashed: %s", watcher, exc)
+    tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__)).rstrip()
+    try:
+        error_log = ERROR_LOG
+        error_log.parent.mkdir(parents=True, exist_ok=True)
+        with error_log.open("a", encoding="utf-8") as fh:
+            fh.write(f"=== WATCHER_CRASH — {watcher} ===\n")
+            fh.write(tb + "\n")
+    except OSError:
+        logger.error("Failed writing watcher crash to error.log")
+    try:
+        from videosripper.logging_setup import log_stage
+
+        # Keep the pipeline line one-shot readable; traceback is in the watcher/error logs.
+        brief = f"{type(exc).__name__}: {exc}".replace("\n", " ")
+        log_stage("WATCHER_CRASH", detail=f"{watcher} — {brief}")
+    except Exception:  # noqa: BLE001
+        logger.error("Failed to write WATCHER_CRASH stage line:\n%s", traceback.format_exc())
+
+
+def touch_heartbeat(watcher: str, *, extra: dict | None = None) -> None:
+    """Update ``logs/watcher-state.json`` heartbeat so a dead watcher is detectable."""
+    patch: dict = {
+        "watcher": watcher,
+        "pid": os.getpid(),
+        "status": "alive",
+        "heartbeat_at": utc_now(),
+    }
+    if extra:
+        patch.update(extra)
+    update_state(f"{HEARTBEAT_SECTION}:{watcher}", patch)
+
+
+def run_resilient_loop(
+    name: str,
+    logger: logging.Logger,
+    fn: Callable[[], _T],
+    *,
+    restart_sec: float = 10.0,
+    heartbeat_name: str | None = None,
+) -> _T | None:
+    """Run ``fn``, logging crashes and restarting after ``restart_sec``.
+
+    Returns when ``fn`` returns normally (e.g. ``--once``). ``SystemExit`` /
+    ``KeyboardInterrupt`` propagate so signal handlers can stop cleanly.
+    Does not restart after a shutdown signal.
+    """
+    while not shutdown_requested():
+        try:
+            if heartbeat_name:
+                touch_heartbeat(heartbeat_name)
+            return fn()
+        except (SystemExit, KeyboardInterrupt):
+            raise
+        except Exception as exc:
+            if shutdown_requested():
+                raise SystemExit(0) from exc
+            log_watcher_crash(name, logger, exc)
+            if heartbeat_name:
+                touch_heartbeat(
+                    heartbeat_name,
+                    extra={"status": "restarting", "last_error": type(exc).__name__},
+                )
+            deadline = time.monotonic() + restart_sec
+            while time.monotonic() < deadline and not shutdown_requested():
+                time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+    raise SystemExit(0)
 
 
 def read_state() -> dict:
@@ -56,18 +184,22 @@ def read_state() -> dict:
 
 
 def update_state(section: str, patch: dict) -> dict:
-    state = read_state()
-    current = state.get(section, {})
-    current.update(patch)
-    current["updated_at"] = utc_now()
-    state[section] = current
-    write_state_atomic(state)
-    return state
+    # Serialize read-modify-write across disc/rip processes (shared state file).
+    with flock(STATE_PATH.with_suffix(".json.lock")):
+        state = read_state()
+        current = state.get(section, {})
+        current.update(patch)
+        current["updated_at"] = utc_now()
+        state[section] = current
+        write_state_atomic(state)
+        return state
 
 
 def write_state_atomic(state: dict) -> None:
     STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = STATE_PATH.with_suffix(".json.tmp")
+    # Unique tmp per writer — shared ``.json.tmp`` races (one replace steals the
+    # file) caused FileNotFoundError / WATCHER_CRASH when both watchers started.
+    tmp = STATE_PATH.with_name(f"{STATE_PATH.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
     tmp.replace(STATE_PATH)
 
@@ -213,6 +345,8 @@ def wait_for_stable_media(
     """Wait until media stays present for debounce_sec."""
     stable_since: float | None = None
     while True:
+        if shutdown_requested():
+            return False
         present = media_present(device)
         now = time.monotonic()
         if present:

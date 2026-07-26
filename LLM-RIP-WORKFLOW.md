@@ -163,6 +163,11 @@ provides `discover_optical_devices()` (enumerates `/dev/sr*`) and `device_slug()
 - **Auto-discover all drives:** `--auto`.
 
 ```bash
+# Preferred: start both detached from the shell/session (setsid + nohup):
+make watch-all
+make watch-status    # running? last heartbeat? disc present?
+make watch-stop      # or: make watch-restart
+
 # Watch every optical drive for inserts, scan + map each in parallel:
 scripts/disc-watcher.py --auto
 
@@ -172,6 +177,11 @@ scripts/rip-watcher.py --auto
 # or bind specific drives:
 scripts/rip-watcher.py --device dev:/dev/sr0 --device dev:/dev/sr1
 ```
+
+`make watch-all` uses `setsid -f nohup …` so watchers are **session leaders** and survive
+the make/agent shell exiting (see [Background watchers](#background-watchers-make-watch-)).
+Prefer either make **or** systemd user units under `scripts/systemd/`, not both (flock
+singletons reject a second instance).
 
 **Disc-watcher** runs one thread per drive; each has its own scan lock, watcher lock
 (`disc-watcher-<slug>`), and state section (`disc_watcher:<slug>`).
@@ -188,32 +198,78 @@ scripts/rip-watcher.py --device dev:/dev/sr0 --device dev:/dev/sr1
 
 Shell remains only for: `scripts/videosripper` launcher, `fix-optical-drive.sh`, NAS mount helpers, and `trigger-map.sh` (one-line wrapper to `python -m videosripper.map_agent`).
 
+### Background watchers (`make watch-*`)
+
+| Target | Purpose |
+|--------|---------|
+| `make watch-all` | Start both watchers **detached** (`setsid -f nohup …`) → `logs/nohup-watch-*.log` |
+| `make watch-stop` | `pkill` the python watcher processes (logs `WATCHER_STOPPED` in `pipeline.log`) |
+| `make watch-restart` | Stop → brief pause → start (do **not** while `makemkvcon` is mid-rip) |
+| `make watch-status` | Running/not, last heartbeat age, disc present |
+
+`setsid` is required: plain `nohup … &` keeps watchers in the make/shell process group, so when an agent or terminal tears that group down with **SIGTERM**, both die **silently** (`nohup` only ignores SIGHUP). That was the 2026-07-25 ~20:12 failure mode after a live `make watch-restart` from an agent shell.
+
+Crash resilience: each device worker runs inside `run_resilient_loop` (logs `WATCHER_CRASH` to `pipeline.log` + traceback to `error.log`, then restarts). Heartbeats land in `logs/watcher-state.json` under `heartbeat:disc-watcher` / `heartbeat:rip-watcher`. SIGTERM/SIGINT log `WATCHER_STOPPED`.
+
+**Durable option:** systemd user units under [`scripts/systemd/`](scripts/systemd/) (`Restart=always`, survives logout). Do not run units and `make watch-all` at the same time.
+
 ### Pipeline stage log (`logs/pipeline.log`)
 
 Single overview log for “where are we?” — watchers and rip call `log_stage` / `log_progress`.
 Both watchers log `STAGE WATCHERS_UP` at startup, so the file exists (and `tail -F logs/pipeline.log`
 works) immediately after `make watch-all`. Every file line is timestamped, and each STAGE line
 carries a `[+…]` marker with the elapsed time since the previous stage in that process —
-so per-stage timing is on the line and overall timing is first-timestamp → DONE-timestamp.
+so per-stage timing is on the line, and `DONE` / `RIP_FAILED` also carry `total=…` for the
+whole rip (first-timestamp → DONE-timestamp still works as a cross-check).
 
 **Two numbered pipelines** (never bare `[1/5]` — that was ambiguous):
 
 | Tag | Process | Steps |
 |-----|---------|-------|
 | `[insert N/5]` | disc-watcher | SCAN → PENDING → REGISTRY → MAP → MAP_LAUNCHED (or REGISTRY_HIT / READY_EXISTS) |
-| `[rip N/5]` | rip-watcher | CLAIM/VALIDATE → RESCAN → VERIFY → RIP → DONE |
+| `[rip N/7]` | rip-watcher | CLAIM/VALIDATE → RESCAN → VERIFY → RIP → COPY → EJECT → DONE |
 
-After `[rip …] DONE` (and `post.copy_to_nas` / eject), the remux is the archive master. **Optional DVD upscale** would be a later, separate step on those finished MKVs — not part of the numbered rip pipeline today. See [Optional post-processing: DVD upscale (RTX 4090)](#optional-post-processing-dvd-upscale-rtx-4090).
+Post-rip detail inside RIP (unnumbered `[rip]` lines, not part of N/7):
+- **REMUX** — ffmpeg `stream_defaults` disposition remux when configured (per title)
+- **COPY** / **COPY_OK** / **COPY_FAILED** — per-file NAS rsync for TV (movies use numbered COPY start + result)
+- Numbered **COPY** (5/7) always closes the NAS phase: dest path on success, or `skipped (…)`
+  (`post.copy_to_nas: false`, no share, output already complete); TV also logs a summary
+  (`N ok, M failed → season dir`)
+- Numbered **EJECT** (6/7) when `post.eject` runs (or `skipped` when disabled). Eject is now
+  logged *after* it actually runs — the old summary claimed "not attempted" before ejecting
+- **DONE** (7/7) runs after copy/eject logging so the rip process clearly closes, and carries
+  `total=…` — wall time since `[rip 1/7]`, since `[+…]` alone would only show the eject gap.
+  `RIP_FAILED` carries the same `total=…`
 
-Status-only lines omit `N/M`: `WATCHERS_UP`, `DISC_DETECTED`, `IDLE`, `WAITING_MANIFEST`.
+Insert-side sub-stage: **IDENTIFY** (unnumbered `[insert]`) reports what bdmt/runtime hints
+produced (`generic=`, `bdmt=`, `candidates=`, `feature=`) — previously a generic-label disc
+jumped SCAN → PENDING with no trace of why the map agent got (or missed) a real title.
+
+After `[rip …] DONE`, the remux is the archive master. **Optional DVD upscale** would be a later, separate step on those finished MKVs — not part of the numbered rip pipeline today. See [Optional post-processing: DVD upscale (RTX 4090)](#optional-post-processing-dvd-upscale-rtx-4090).
+
+Status-only lines omit `N/M`: `WATCHERS_UP`, `DISC_DETECTED`, `IDLE`, `WAITING_MANIFEST`,
+`WATCHER_STOPPED`, `WATCHER_CRASH`.
 Failures keep the process tag without a step: `=== STAGE [insert] SCAN_FAILED — … ===`.
 
 Each stage names the object it is working on: device for SCAN/DISC_DETECTED, disc name + slug id
-for PENDING/REGISTRY/MAP, manifest label + yaml filename for VALIDATE/VERIFY/RIP/DONE.
-`progress [rip] RIP` uses **tracks completed / tracks in this run** (not slot or makemkv title index),
-so `0/12 (0%)` means starting the first of 12, `3/12 (25%)` means three finished. Movies log
-`0/1` while ripping and `1/1` after the file lands. MakeMKV PRGV is stall-watch only — not the
-pipeline percent.
+for PENDING/REGISTRY/MAP, manifest label + yaml filename for VALIDATE/VERIFY/RIP/DONE,
+file → NAS dest for COPY. `progress [rip] RIP` uses **tracks completed / tracks in this run**
+(not slot or makemkv title index), so `0/12 (0%)` means starting the first of 12, `3/12 (25%)`
+means three finished. Movies log `0/1` while ripping and `1/1` after the file lands. That
+numbered `RIP N/M` only advances *between* titles.
+
+**Within-title live percent:** each `makemkvcon mkv` runs with `--progress=-same` (default robot
+mode emits no progress), so `PRGV:current,total,max` lines stream to stdout. `prgv_percent` takes
+the `total`/`max` (overall) bar and a `RipDecileTracker` throttles it to one line per rising 10%,
+logged as `  progress [rip] RIP title 0 — 40% (MakeMKV, ~14m left)` — so `tail -F logs/pipeline.log`
+shows movement inside a long title. ETA uses elapsed×(100−pct)/pct once ≥10% and ≥30s have elapsed
+(omitted earlier while the rate is unstable; formats as `~14m` / `~1h05m` / `<1m`). The same percent
+and `eta_sec` land in `rip_progress` in `logs/watcher-state.json` and `make watch-status`
+(`rip: title 0 — 40% (MakeMKV, ~14m left)`). PRGV still feeds stall detection (alongside staging file growth and
+`MSG:5014`), so a rip with no PRGV *and* no file growth still trips `VIDEOSRIPPER_STALL_TIMEOUT_SEC`.
+Caveats: `current`/`total` reset per title (we rip one title per `makemkvcon` call, so `total` = the
+current title); the disc-open phase precedes any PRGV; on multi-title TV discs each title's percent
+is separate from the numbered `RIP N/M` track counter.
 
 ```
 2026-07-25 16:40:02 === STAGE WATCHERS_UP — disc-watcher waiting (devices=dev:/dev/sr0, dev:/dev/sr1) ===
@@ -221,19 +277,40 @@ pipeline percent.
 2026-07-25 16:41:26 === STAGE DISC_DETECTED — device=dev:/dev/sr0; debouncing 45s === [+1m23s]
 2026-07-25 16:42:11 === STAGE [insert 1/5] SCAN — device=dev:/dev/sr0 === [+45s]
 2026-07-25 16:43:20   progress [insert] SCAN 2/2 (100%) — titles found (DVD_VIDEO)
+2026-07-25 16:43:20 === STAGE [insert] IDENTIFY — label='DVD_VIDEO' generic=True bdmt=- candidates=2 feature=10123s ===
 2026-07-25 16:43:20 === STAGE [insert 2/5] PENDING — disc=DVD_VIDEO id=dvd-video -> dvd-video.scan.json === [+1m09s]
 2026-07-25 16:43:20 === STAGE [insert 3/5] REGISTRY — lookup disc=DVD_VIDEO id=dvd-video ===
 2026-07-25 16:43:20 === STAGE [insert 4/5] MAP — unknown disc id=dvd-video (DVD_VIDEO) ===
 2026-07-25 16:43:21 === STAGE [insert 5/5] MAP_LAUNCHED — id=dvd-video background agent; waiting for staging/ready/dvd-video.yaml ===
-2026-07-25 16:45:01 === STAGE [rip 1/5] CLAIM — scarface-1983.yaml claimed by dev=dev:/dev/sr0 (disc=DVD_VIDEO) === [+1m40s]
-2026-07-25 16:45:02 === STAGE [rip 2/5] RESCAN — Scarface (1983) dev=dev:/dev/sr0 ===
-2026-07-25 16:47:29 === STAGE [rip 3/5] VERIFY — disc=DVD_VIDEO vs manifest=Scarface (1983) (scarface-1983.yaml) === [+2m27s]
-2026-07-25 16:47:30 === STAGE [rip 4/5] RIP — Scarface (1983) (1 track(s)) dev=dev:/dev/sr0 ===
+2026-07-25 16:45:01 === STAGE [rip 1/7] CLAIM — scarface-1983.yaml claimed by dev=dev:/dev/sr0 (disc=DVD_VIDEO) === [+1m40s]
+2026-07-25 16:45:02 === STAGE [rip 2/7] RESCAN — Scarface (1983) dev=dev:/dev/sr0 ===
+2026-07-25 16:47:29 === STAGE [rip 3/7] VERIFY — disc=DVD_VIDEO vs manifest=Scarface (1983) (scarface-1983.yaml) === [+2m27s]
+2026-07-25 16:47:30 === STAGE [rip 4/7] RIP — Scarface (1983) (1 track(s)) dev=dev:/dev/sr0 ===
 2026-07-25 16:47:30   progress [rip] RIP 0/1 (0%) — ripping 1/1: title 0 → Scarface (1983).mkv
+2026-07-25 17:11:30 === STAGE [rip] REMUX — stream_defaults audio=eng subtitle=cleared — title_t00.mkv === [+24m00s]
 2026-07-25 17:12:44   progress [rip] RIP 1/1 (100%) — done 1/1: title 0 → Scarface (1983).mkv
-2026-07-25 17:12:45 === STAGE [rip 5/5] DONE — Scarface (1983) (scarface-1983.yaml -> staging/done) === [+25m15s]
-2026-07-25 17:13:10 === STAGE IDLE — device=dev:/dev/sr0 — no disc; waiting for insert === [+25s]
+2026-07-25 17:12:50 === STAGE [rip 5/7] COPY — start Scarface (1983).mkv → /mnt/tn-sas/Movies/Scarface (1983).mkv === [+1m20s]
+2026-07-25 17:13:05 === STAGE [rip] COPY_OK — Scarface (1983).mkv → /mnt/tn-sas/Movies/Scarface (1983).mkv === [+15s]
+2026-07-25 17:13:06 === STAGE [rip 6/7] EJECT — ok /dev/sr0 === [+1s]
+2026-07-25 17:13:06 === STAGE [rip 7/7] DONE — Scarface (1983) (scarface-1983.yaml -> staging/done; copy/eject above) total=28m05s ===
+2026-07-25 17:13:10 === STAGE IDLE — device=dev:/dev/sr0 — no disc; waiting for insert === [+4s]
 ```
+
+TV discs copy each episode as it finishes, so the NAS phase interleaves with `RIP` progress and
+the numbered `COPY` line is the end-of-disc summary:
+
+```
+2026-07-25 18:02:11   progress [rip] RIP 1/5 (20%) — ripping 2/5: slot 2 title 4 — 6x02 Realm of Fear
+2026-07-25 18:02:11 === STAGE [rip] COPY — start Star Trek TNG - 6x01 - Time's Arrow.mkv → /mnt/tn-sas/Shows/Star Trek TNG/Season 06/Star Trek TNG - 6x01 - Time's Arrow.mkv ===
+2026-07-25 18:03:04 === STAGE [rip] COPY_OK — Star Trek TNG - 6x01 - Time's Arrow.mkv → /mnt/tn-sas/Shows/Star Trek TNG/Season 06/Star Trek TNG - 6x01 - Time's Arrow.mkv === [+53s]
+2026-07-25 18:44:52 === STAGE [rip 5/7] COPY — 5 ok, 0 failed → /mnt/tn-sas/Shows/Star Trek TNG/Season 06 ===
+2026-07-25 18:44:53 === STAGE [rip 6/7] EJECT — skipped (post.eject: false) ===
+2026-07-25 18:44:53 === STAGE [rip 7/7] DONE — Star Trek TNG S6D1 (st-tng-s6d1.yaml -> staging/done; copy/eject above) total=1h04m12s ===
+```
+
+A failed copy is loud in `pipeline.log` now instead of only `rip.log`:
+`=== STAGE [rip] COPY_FAILED — Scarface (1983).mkv → /mnt/tn-sas/Movies/Scarface (1983).mkv ===`
+followed by `=== STAGE [rip 5/7] COPY — 0 ok, 1 failed → … ===` (TV) — the local rip is kept.
 
 Per-process detail stays in `rip.log` / `disc-watcher.log` / `rip-watcher.log` / `debug.log`.
 
@@ -593,7 +670,7 @@ ffmpeg -i "in.mkv" -vf "libplacebo=w=1920:h=1080:upscaler=ewa_lanczossharp:norma
 
 ### Where it would plug into VideosRipper later (design only)
 
-Natural hook: **after** remux + verify + optional `post.copy_to_nas` — i.e. once `[rip …] DONE` has produced the master MKV. Do **not** fold upscale into MakeMKV stages or the `[rip N/5]` numbered pipeline.
+Natural hook: **after** remux + verify + optional `post.copy_to_nas` — i.e. once `[rip …] DONE` has produced the master MKV. Do **not** fold upscale into MakeMKV stages or the `[rip N/7]` numbered pipeline.
 
 Possible future shapes (none implemented):
 
@@ -752,6 +829,7 @@ Existing manifests: `configs/spongebob/s8-disc{1,2,3}.yaml`, `configs/movies/gho
 | `VIDEOSRIPPER_ROOT` | `/mnt/game1/VideosRipper` | Base path |
 | `VIDEOSRIPPER_OUTPUT` | `$ROOT/output` | Final MKV output |
 | `VIDEOSRIPPER_STAGING` | `$ROOT/staging` | Temp rip dirs |
+| `VIDEOSRIPPER_TMP` | `$ROOT/.tmp` | Ephemeral work (identify mounts); keep off `/tmp` tmpfs |
 | `VIDEOSRIPPER_LOGS` | `$ROOT/logs` | Log files |
 | `VIDEOSRIPPER_NAS` | `/mnt/tn-sas/Anime/Spongebob Squarepants` | SpongeBob NAS base (Anime share) |
 | `VIDEOSRIPPER_SHOWS_NAS` | `/mnt/tn-sas/Shows` | Live-action TV Shows share root |
@@ -1734,6 +1812,8 @@ Resume: `scripts/videosripper rip configs/movies/scarface-1983.yaml`
 
 | Symptom | Fix |
 |---------|-----|
+| Watchers die silently after `make watch-all` / agent shell exits | Fixed by `setsid -f` in `watch-all`. Confirm session leaders: `ps -o pid,pgid,sid,stat,cmd -C python` should show `S<s` and PID=SID. Restart with `make watch-restart`. Check `pipeline.log` for `WATCHER_STOPPED` (clean signal) vs sudden gap (old nohup-only bug). |
+| Watcher process up but idle forever | Device thread may have crashed pre-hardening; now logs `WATCHER_CRASH` + restarts. `make watch-status` — stale heartbeat → restart. |
 | `VideosRipper venv missing` | `cd /mnt/game1/VideosRipper && python -m venv .venv && .venv/bin/pip install -e .` |
 | No `/dev/sr0` | Run `scripts/fix-optical-drive.sh`; replug USB drive |
 | Manifest validation error | Fix YAML per [schema](#yaml-manifest-schema); run `scripts/videosripper validate` |

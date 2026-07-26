@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -17,12 +18,16 @@ from videosripper.monitor import (
     DiscOpenError,
     MakeMkvProcessError,
     MonitorSettings,
+    RipDecileTracker,
     RipStallError,
     RipWatchdog,
     diagnose_process_failure,
+    estimate_eta_sec,
     is_disc_open_failure,
     is_progress_line,
+    is_save_phase_line,
     log_makemkv_failure,
+    prgv_percent,
 )
 from videosripper.paths import MAKEMKV_BIN, MAKEMKV_CONF
 
@@ -171,6 +176,27 @@ def parse_scan_output(raw: str) -> ScanResult:
     return result
 
 
+def _write_rip_progress_state(title_index: int | None, pct: int, start: float) -> None:
+    """Best-effort update of ``logs/watcher-state.json`` rip_progress section.
+
+    Never raises — progress reporting must not disturb the rip.
+    """
+    try:
+        from videosripper.watcher_util import update_state
+
+        elapsed = max(0.0, time.monotonic() - start)
+        update_state(
+            "rip_progress",
+            {
+                "title": title_index,
+                "pct": pct,
+                "eta_sec": estimate_eta_sec(pct, elapsed),
+            },
+        )
+    except Exception:  # noqa: BLE001 — progress side-channel is non-critical
+        pass
+
+
 def _run_makemkv_streaming(
     cmd: list[str],
     *,
@@ -181,6 +207,13 @@ def _run_makemkv_streaming(
     settings = monitor or MonitorSettings.resolve()
     watchdog = RipWatchdog(settings=settings, staging=staging)
     watchdog.start()
+    from videosripper.logging_setup import log_rip_percent
+
+    tracker = RipDecileTracker()
+    start = time.monotonic()
+    last_state_pct = -1
+    last_state_at = 0.0
+    save_phase = False
     lines: list[str] = []
     log_debug("$ %s", " ".join(cmd))
     proc = subprocess.Popen(
@@ -197,9 +230,28 @@ def _run_makemkv_streaming(
             line = raw_line.rstrip("\n")
             lines.append(line)
             log_debug(line)
+            # Open/analyze PRGV still feeds the stall watchdog, but percent
+            # logging waits for save — early phase bars often hit 100% briefly.
+            if is_save_phase_line(line):
+                save_phase = True
             if is_progress_line(line):
                 reason = "prgv" if line.strip().startswith("PRGV:") else "msg_save"
                 watchdog.note_progress(reason)
+                pct = prgv_percent(line) if save_phase else None
+                if pct is not None:
+                    now = time.monotonic()
+                    elapsed = max(0.0, now - start)
+                    milestone = tracker.milestone_for(pct)
+                    if milestone is not None:
+                        log_rip_percent(
+                            milestone,
+                            title=title_index,
+                            eta_sec=estimate_eta_sec(milestone, elapsed),
+                        )
+                    if pct != last_state_pct and (now - last_state_at >= 5.0 or pct == 100):
+                        _write_rip_progress_state(title_index, pct, start)
+                        last_state_pct = pct
+                        last_state_at = now
         proc.wait()
     finally:
         watchdog.stop()
@@ -337,6 +389,10 @@ def rip_title(
             str(MAKEMKV_BIN),
             "mkv",
             "-r",
+            # Route PRGV/PRGT/PRGC progress to stdout (default is no progress
+            # output) so within-title percent is parseable and stall detection
+            # sees PRGV in addition to file growth / MSG:5014.
+            "--progress=-same",
             f"--minlength={minlength}",
             device,
             title_arg,

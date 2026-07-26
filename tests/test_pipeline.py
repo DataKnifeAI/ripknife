@@ -66,6 +66,50 @@ def test_step_write_pending_creates_json_files(tmp_path: Path, monkeypatch: pyte
     assert meta["title_count"] == 1
 
 
+def test_log_identify_reports_hints(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Generic-label discs used to jump SCAN → PENDING with no identify trace."""
+    calls: list[tuple[str, dict]] = []
+    monkeypatch.setattr(
+        pipeline, "log_stage", lambda stage, **kw: calls.append((stage, kw))
+    )
+
+    pending = pipeline.PendingDisc(
+        disc_id="dvd-video",
+        disc_name="DVD_VIDEO",
+        scan_json=tmp_path / "dvd-video.scan.json",
+        meta_json=tmp_path / "dvd-video.meta.json",
+        scan_data={
+            "identification": {
+                "is_generic_label": True,
+                "bluray_title": None,
+                "feature_duration_sec": 6123,
+                "candidates": [{"title": "A"}, {"title": "B"}],
+            }
+        },
+    )
+    pipeline._log_identify(pending)
+    stage, kwargs = calls[0]
+    assert stage == "IDENTIFY"
+    assert kwargs["process"] == pipeline.PROCESS_INSERT
+    assert "generic=True" in kwargs["detail"]
+    assert "candidates=2" in kwargs["detail"]
+    assert "feature=6123s" in kwargs["detail"]
+    assert "bdmt=-" in kwargs["detail"]
+
+    # No identification block (e.g. older scan JSON) → no line at all
+    calls.clear()
+    pipeline._log_identify(
+        pipeline.PendingDisc(
+            disc_id="x",
+            disc_name="X",
+            scan_json=tmp_path / "x.scan.json",
+            meta_json=tmp_path / "x.meta.json",
+            scan_data={},
+        )
+    )
+    assert calls == []
+
+
 def test_run_device_worker_once_binds_manifest_to_worker_drive(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

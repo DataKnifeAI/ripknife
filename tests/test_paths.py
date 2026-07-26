@@ -46,3 +46,23 @@ def test_default_device_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_movies_nas_default() -> None:
     assert paths.MOVIES_NAS == Path("/mnt/tn-sas/Movies")
+
+
+def test_ensure_tmp_root_creates_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "game-tmp"
+    monkeypatch.setattr(paths, "TMP_ROOT", target)
+    assert not target.exists()
+    assert paths.ensure_tmp_root() == target
+    assert target.is_dir()
+
+
+def test_tmp_root_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("VIDEOSRIPPER_TMP", str(tmp_path / "custom-tmp"))
+    import importlib
+
+    importlib.reload(paths)
+    try:
+        assert paths.TMP_ROOT == tmp_path / "custom-tmp"
+    finally:
+        monkeypatch.delenv("VIDEOSRIPPER_TMP", raising=False)
+        importlib.reload(paths)

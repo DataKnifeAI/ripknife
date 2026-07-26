@@ -10,7 +10,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from videosripper import ffmpeg_ops
-from videosripper.logging_setup import log_debug
+from videosripper.logging_setup import (
+    log_copy_result,
+    log_copy_skipped,
+    log_copy_start,
+    log_copy_summary,
+    log_debug,
+    log_eject_stage,
+    log_remux_stage,
+)
 from videosripper.makemkv import ScanResult, rip_title, scan
 from videosripper.models import (
     TvDiscManifest,
@@ -52,6 +60,7 @@ class RipSessionStats:
     nas_ok: int = 0
     nas_failed: int = 0
     nas_skipped: int = 0
+    nas_dest: str = ""  # last NAS destination dir (for the COPY summary line)
     ejected: bool | None = None  # None = not attempted
 
 
@@ -198,16 +207,22 @@ def _maybe_copy(
     if not manifest.post.copy_to_nas or nas_share is None:
         stats.nas_skipped += 1
         return
+    season_rel = tv_nas_season_dir(manifest, season)
+    dest = nas_share / season_rel / final.name
+    stats.nas_dest = str(dest.parent)
+    log_copy_start(final.name, dest, numbered=False)
     if copy_episode_to_share(
         final,
-        tv_nas_season_dir(manifest, season),
+        season_rel,
         nas_share=nas_share,
         retries=retry.nas_retries,
         delay_sec=retry.delay_sec,
     ):
         stats.nas_ok += 1
+        log_copy_result(True, final.name, dest)
     else:
         stats.nas_failed += 1
+        log_copy_result(False, final.name, dest)
 
 
 def _postprocess_ripped(
@@ -220,6 +235,10 @@ def _postprocess_ripped(
     sd = manifest.stream_defaults
     if not sd.audio_default and not sd.subtitle_default:
         return ripped
+    sub = sd.subtitle_default or "cleared"
+    log_remux_stage(
+        f"stream_defaults audio={sd.audio_default} subtitle={sub} — {ripped.name}"
+    )
     processed = staging / f".defaults_{ripped.stem}.mkv"
     return ffmpeg_ops.apply_stream_defaults_or_keep(
         ripped,
@@ -637,24 +656,34 @@ def rip_tv_disc(
                 total_mkv,
                 ", ".join(str(d) for d in sorted(out_dirs)),
             )
-            if stats.nas_skipped:
+            if not manifest.post.copy_to_nas:
                 logger.info("NAS copy: skipped (post.copy_to_nas: false)")
+                log_copy_skipped("post.copy_to_nas: false")
+            elif nas_share is None:
+                logger.info("NAS copy: skipped (no nas share)")
+                log_copy_skipped("no nas share")
             else:
                 logger.info(
                     "NAS copy: %d ok, %d failed",
                     stats.nas_ok,
                     stats.nas_failed,
                 )
-            if stats.ejected is True:
-                logger.info("Eject: success")
-            elif stats.ejected is False:
-                logger.info("Eject: failed — eject manually")
-            else:
-                logger.info("Eject: not attempted")
+                log_copy_summary(
+                    stats.nas_ok,
+                    stats.nas_failed,
+                    stats.nas_dest or str(nas_share),
+                )
             if manifest.post.eject:
                 stats.ejected = eject_disc(disc_dev(manifest.meta.device))
+                log_eject_stage(disc_dev(manifest.meta.device), ok=stats.ejected)
                 if stats.ejected:
+                    logger.info("Eject: success")
                     logger.info("Eject OK: %s", disc_dev(manifest.meta.device))
+                else:
+                    logger.info("Eject: failed — eject manually")
+            else:
+                log_eject_stage(disc_dev(manifest.meta.device), skipped="post.eject: false")
+                logger.info("Eject: not attempted")
     finally:
         if not dry_run and staging.exists() and staging.name.startswith(".rip."):
             shutil.rmtree(staging, ignore_errors=True)

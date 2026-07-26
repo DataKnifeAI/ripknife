@@ -1,0 +1,21 @@
+# VideosRipper rip-watcher (Process 2) — systemd user unit
+# See videosripper-disc-watcher.service for install instructions.
+
+[Unit]
+Description=VideosRipper rip-watcher (ready manifests → rip)
+After=default.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/mnt/game1/VideosRipper
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/environment.d/makemkv.conf
+ExecStart=/mnt/game1/VideosRipper/.venv/bin/python /mnt/game1/VideosRipper/scripts/rip-watcher.py --auto
+Restart=always
+RestartSec=10
+KillMode=process
+
+[Install]
+WantedBy=default.target

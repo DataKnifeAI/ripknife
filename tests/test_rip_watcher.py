@@ -85,6 +85,9 @@ def test_already_ripped_movie_detects_nas_output(
 def test_rescan_manifest_uses_direct_scan(
     rip_watcher, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from contextlib import nullcontext
+
+    from videosripper import pipeline
     from videosripper.makemkv import ScanResult, TitleInfo
     from videosripper.models import MovieManifest
 
@@ -110,6 +113,8 @@ def test_rescan_manifest_uses_direct_scan(
         return ScanResult(raw="", disc_name="John Wick", titles=titles)
 
     monkeypatch.setattr("videosripper.makemkv.scan", fake_scan)
+    # Do not contend with a live rip-watcher's per-device flock.
+    monkeypatch.setattr(pipeline, "flock", lambda *a, **k: nullcontext())
 
     class _Logger:
         def error(self, *_args, **_kwargs) -> None:

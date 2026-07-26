@@ -35,13 +35,18 @@ from videosripper.pipeline import (  # noqa: E402
 )
 from videosripper.watcher_util import (  # noqa: E402
     flock,
+    install_watcher_signal_handlers,
     media_present,
+    run_resilient_loop,
     setup_watcher_logger,
+    shutdown_requested,
+    touch_heartbeat,
     update_state,
     watcher_lock_path,
 )
 
 LOG_FILE = LOG_ROOT / "rip-watcher.log"
+WATCHER_NAME = "rip-watcher"
 
 _WORKER_IDLE_MESSAGES = {"idle", "no titles", "claim lost"}
 
@@ -89,7 +94,8 @@ def watch_loop(args: argparse.Namespace, logger) -> int:
     logger.info("Rip watcher started (poll=%ss)", args.poll_sec)
     update_state("rip_watcher", {"status": "idle"})
 
-    while True:
+    while not shutdown_requested():
+        touch_heartbeat(WATCHER_NAME)
         for yaml_path in list_ready_yamls():
             if not _file_stable(yaml_path):
                 continue
@@ -109,47 +115,88 @@ def watch_loop(args: argparse.Namespace, logger) -> int:
             )
             if args.once:
                 return 0
-        time.sleep(args.poll_sec)
+        deadline = time.monotonic() + args.poll_sec
+        while time.monotonic() < deadline and not shutdown_requested():
+            time.sleep(min(1.0, deadline - time.monotonic()))
+    raise SystemExit(0)
+
+
+def _device_rip_body(device: str, args: argparse.Namespace, logger) -> int:
+    """Inner device-bound loop body (exceptions bubble to resilient wrapper)."""
+    section = f"rip_watcher:{device_slug(device)}"
+    logger.info("[%s] Rip worker started (poll=%ss)", device, args.poll_sec)
+    update_state(section, {"status": "idle", "device": device})
+    last_waiting_msg: str | None = None
+    while not shutdown_requested():
+        touch_heartbeat(WATCHER_NAME, extra={"device": device})
+        if list_ready_yamls() and media_present(device):
+            update_state(section, {"status": "scanning", "device": device})
+            result = run_device_worker_once(device, logger)
+            # Surface "disc present but no matching manifest" once per state
+            # change so tail -F pipeline.log explains why nothing rips.
+            if result.message.startswith("no manifest") or result.message == "no titles":
+                if result.message != last_waiting_msg:
+                    log_stage("WAITING_MANIFEST", detail=f"dev={device} {result.message}")
+                last_waiting_msg = result.message
+            else:
+                last_waiting_msg = None
+            update_state(
+                section,
+                {
+                    "status": result.message if result.ok else "failed",
+                    "device": device,
+                    "reason": result.message,
+                },
+            )
+            processed = result.message not in _WORKER_IDLE_MESSAGES and not result.message.startswith(
+                "no manifest"
+            )
+            if args.once and processed:
+                return 0
+        deadline = time.monotonic() + args.poll_sec
+        while time.monotonic() < deadline and not shutdown_requested():
+            time.sleep(min(1.0, deadline - time.monotonic()))
+    raise SystemExit(0)
 
 
 def _device_rip_loop(device: str, args: argparse.Namespace, logger) -> int:
     """Device-bound worker: scan this drive, claim + rip the matching manifest."""
     lock_name = f"rip-worker-{device_slug(device)}"
-    section = f"rip_watcher:{device_slug(device)}"
+    worker_name = f"{WATCHER_NAME}:{device_slug(device)}"
     try:
         with flock(watcher_lock_path(lock_name), blocking=False):
-            logger.info("[%s] Rip worker started (poll=%ss)", device, args.poll_sec)
-            update_state(section, {"status": "idle", "device": device})
-            last_waiting_msg: str | None = None
-            while True:
-                if list_ready_yamls() and media_present(device):
-                    update_state(section, {"status": "scanning", "device": device})
-                    result = run_device_worker_once(device, logger)
-                    # Surface "disc present but no matching manifest" once per state
-                    # change so tail -F pipeline.log explains why nothing rips.
-                    if result.message.startswith("no manifest") or result.message == "no titles":
-                        if result.message != last_waiting_msg:
-                            log_stage("WAITING_MANIFEST", detail=f"dev={device} {result.message}")
-                        last_waiting_msg = result.message
-                    else:
-                        last_waiting_msg = None
-                    update_state(
-                        section,
-                        {
-                            "status": result.message if result.ok else "failed",
-                            "device": device,
-                            "reason": result.message,
-                        },
-                    )
-                    processed = result.message not in _WORKER_IDLE_MESSAGES and not result.message.startswith(
-                        "no manifest"
-                    )
-                    if args.once and processed:
-                        return 0
-                time.sleep(args.poll_sec)
+            # Catch-all: device threads must not die on an unhandled exception
+            # while main joins forever (watcher looks alive but does nothing).
+            run_resilient_loop(
+                worker_name,
+                logger,
+                lambda: _device_rip_body(device, args, logger),
+                heartbeat_name=WATCHER_NAME,
+            )
+            return 0
     except BlockingIOError:
         logger.error("[%s] Another rip worker is already bound to this drive", device)
         return 1
+    except SystemExit:
+        raise
+
+
+def _supervise_threads(threads: list[threading.Thread], logger) -> None:
+    try:
+        while not shutdown_requested():
+            alive = [t for t in threads if t.is_alive()]
+            if not alive:
+                logger.error("All rip-watcher device threads exited; process staying up for restart tooling")
+                touch_heartbeat(WATCHER_NAME, extra={"status": "threads_dead"})
+                time.sleep(30.0)
+                continue
+            touch_heartbeat(WATCHER_NAME, extra={"threads_alive": len(alive)})
+            for t in alive:
+                t.join(timeout=30.0)
+    except KeyboardInterrupt:
+        logger.info("Rip workers interrupted; exiting")
+        raise SystemExit(0)
+    raise SystemExit(0)
 
 
 def _run_workers(devices: list[str], args: argparse.Namespace, logger) -> int:
@@ -168,38 +215,39 @@ def _run_workers(devices: list[str], args: argparse.Namespace, logger) -> int:
     ]
     for t in threads:
         t.start()
-    try:
-        for t in threads:
-            t.join()
-    except KeyboardInterrupt:
-        logger.info("Rip workers interrupted; exiting")
+    _supervise_threads(threads, logger)
     return 0
 
 
 def main() -> int:
     args = parse_args()
-    logger = setup_watcher_logger("rip-watcher", LOG_FILE)
+    logger = setup_watcher_logger(WATCHER_NAME, LOG_FILE)
+    install_watcher_signal_handlers(WATCHER_NAME, logger)
     READY_DIR.mkdir(parents=True, exist_ok=True)
     DONE_DIR.mkdir(parents=True, exist_ok=True)
     FAILED_DIR.mkdir(parents=True, exist_ok=True)
+    touch_heartbeat(WATCHER_NAME)
 
     if args.devices or args.auto:
         devices = resolve_watch_devices(args.devices, auto=args.auto)
-        log_watcher_waiting("rip-watcher", devices)
+        log_watcher_waiting(WATCHER_NAME, devices)
         return _run_workers(devices, args, logger)
 
-    log_watcher_waiting("rip-watcher")
+    log_watcher_waiting(WATCHER_NAME)
     try:
         with flock(watcher_lock_path("rip-watcher"), blocking=False):
-            while True:
-                try:
-                    return watch_loop(args, logger)
-                except Exception:
-                    logger.exception("Rip watcher crashed; restarting in 10s")
-                    time.sleep(10.0)
+            run_resilient_loop(
+                WATCHER_NAME,
+                logger,
+                lambda: watch_loop(args, logger),
+                heartbeat_name=WATCHER_NAME,
+            )
+            return 0
     except BlockingIOError:
         logger.error("Another rip-watcher instance is already running")
         return 1
+    except SystemExit:
+        raise
 
 
 if __name__ == "__main__":
