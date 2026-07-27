@@ -1,5 +1,8 @@
 """Disc title identification helpers for generic-labeled discs.
 
+Generic labels are detected heuristically (patterns + boilerplate tokens),
+not via an exhaustive allowlist of full volume-label strings.
+
 Two sources of identification hints (never overwrite ``disc_name``):
 
 1. **Blu-ray bdmt XML** — ``BDMV/META/DL/bdmt_*.xml`` often carries the real
@@ -28,28 +31,53 @@ from videosripper.paths import disc_dev, ensure_tmp_root
 
 logger = logging.getLogger("videosripper")
 
-GENERIC_DISC_NAMES = frozenset(
+# Seed vocabulary of uninformative volume-label tokens (not an exhaustive
+# list of full disc names). Used by fuzzy/heuristic matching.
+BOILERPLATE_TOKENS = frozenset(
     {
-        "dvd_video",
-        "dvd-video",
-        "dvdvideo",
-        "video_ts",
-        "video-ts",
+        "dvd",
+        "video",
+        "volume",
+        "vol",
+        "disc",
+        "bd",
+        "bluray",
+        "blu",
+        "ray",
+        "udf",
+        "title",
         "untitled",
         "unknown",
-        "unknown-disc",
-        "bd_video",
-        "bd-video",
+        "media",
+        "ts",
         "bdmv",
-        "bluray",
-        "blu-ray",
+        "avchd",
     }
 )
 
-_GENERIC_RE = re.compile(
-    r"^(dvd[_\s-]?video|video[_\s-]?ts|bd[_\s-]?video|untitled|unknown(-\w+)?)$",
-    re.IGNORECASE,
+# Structural patterns for common manufacturer/OS default volume labels.
+_GENERIC_LABEL_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^DVD[\s_-]*VOL(UME)?\d*$", re.IGNORECASE),
+    re.compile(r"^DVD[\s_-]*VIDEO\d*$", re.IGNORECASE),
+    re.compile(r"^VIDEO[\s_-]*TS\d*$", re.IGNORECASE),
+    re.compile(r"^BD[\s_-]*VIDEO\d*$", re.IGNORECASE),
+    re.compile(r"^BDMV\d*$", re.IGNORECASE),
+    re.compile(r"^AVCHD\d*$", re.IGNORECASE),
+    re.compile(r"^UNTITLED\b.*", re.IGNORECASE),
+    re.compile(r"^UNKNOWN\b.*", re.IGNORECASE),
+    re.compile(r"^DISC\d*$", re.IGNORECASE),
+    re.compile(r"^VOL(UME)?\d*$", re.IGNORECASE),
+    re.compile(r"^BLU[\s_-]*RAY\d*$", re.IGNORECASE),
+    re.compile(r"^BLURAY\d*$", re.IGNORECASE),
+    re.compile(r"^UDF\d*$", re.IGNORECASE),
+    re.compile(r"^MEDIA\d*$", re.IGNORECASE),
 )
+
+_VOWELS = frozenset("AEIOUY")
+_NON_ALNUM_RE = re.compile(r"[^A-Z0-9]+")
+_SEPARATOR_RE = re.compile(r"[\s_-]+")
+_EDGE_PUNCT_RE = re.compile(r"^[^\w]+|[^\w]+$", re.UNICODE)
+_DIGITS_RE = re.compile(r"\d+")
 
 # TMDb / OMDb keys (optional — lookups skipped when unset)
 TMDB_API_KEY = os.environ.get("VIDEOSRIPPER_TMDB_API_KEY") or os.environ.get("TMDB_API_KEY", "")
@@ -104,13 +132,80 @@ class IdentificationHints:
         return None
 
 
+def _normalize_disc_label(disc_name: str) -> tuple[str, str, list[str]]:
+    """Uppercase, strip, collapse separators → (spaced, compact, tokens)."""
+    raw = disc_name.strip().upper()
+    spaced = _SEPARATOR_RE.sub(" ", raw).strip()
+    spaced = re.sub(r"\bBLU\s+RAY\b", "BLURAY", spaced)
+    compact = _SEPARATOR_RE.sub("", raw)
+    tokens: list[str] = []
+    for part in spaced.split():
+        cleaned = _EDGE_PUNCT_RE.sub("", part)
+        if cleaned:
+            tokens.append(cleaned.lower())
+    return spaced, compact, tokens
+
+
+def _matches_generic_pattern(raw: str, spaced: str, compact: str) -> bool:
+    for pat in _GENERIC_LABEL_PATTERNS:
+        if pat.match(raw) or pat.match(spaced) or pat.match(compact):
+            return True
+    return False
+
+
+def _tokens_are_boilerplate(tokens: list[str]) -> bool:
+    """True when every letter-bearing token is media boilerplate vocabulary."""
+    if not tokens:
+        return True
+    letter_tokens: list[str] = []
+    for tok in tokens:
+        alpha = _DIGITS_RE.sub("", tok)
+        if alpha:
+            letter_tokens.append(alpha)
+    if not letter_tokens:
+        # Digits-only labels (e.g. "01") — treat short ones as uninformative.
+        return len(tokens) <= 2
+    return all(t in BOILERPLATE_TOKENS for t in letter_tokens)
+
+
+def _looks_like_opaque_serial(compact: str) -> bool:
+    """Flag long vowel-less / digit-heavy serials; spare real short titles."""
+    s = _NON_ALNUM_RE.sub("", compact.upper())
+    if len(s) < 8:
+        return False
+    letters = re.sub(r"[^A-Z]", "", s)
+    digits = re.sub(r"[^0-9]", "", s)
+    if not letters:
+        return True
+    if not any(c in _VOWELS for c in letters):
+        return bool(digits) or len(letters) >= 10
+    return False
+
+
 def is_generic_disc_name(disc_name: str | None) -> bool:
+    """Return True when ``disc_name`` is an uninformative volume label.
+
+    Uses heuristics (patterns + boilerplate-token vocabulary), not an
+    exhaustive allowlist of full label strings. Real titles like JUMPER,
+    SNATCH, or What About Bob must not match.
+    """
     if not disc_name or not disc_name.strip():
         return True
-    normalized = disc_name.strip().lower().replace(" ", "_")
-    if normalized in GENERIC_DISC_NAMES:
+    raw = disc_name.strip()
+    spaced, compact, tokens = _normalize_disc_label(raw)
+
+    if _matches_generic_pattern(raw, spaced, compact):
         return True
-    return bool(_GENERIC_RE.match(disc_name.strip()))
+
+    # Entirely boilerplate tokens after stripping digits/separators
+    # (also covers short opaque labels of ≤3 boilerplate tokens).
+    if tokens and _tokens_are_boilerplate(tokens):
+        return True
+
+    if _looks_like_opaque_serial(compact):
+        return True
+
+    return False
 
 
 def feature_duration_sec(titles: list[dict[str, Any]] | dict[int, Any]) -> int | None:

@@ -6,7 +6,7 @@ Instructions for an LLM assisting with DVD ripping on this machine. Read this fi
 
 Rip SpongeBob SquarePants DVDs losslessly with MakeMKV, rename files for Plex, copy each episode to the NAS library, and optionally eject the disc when finished (`post.eject: true` in the manifest).
 
-**Archive principle:** the pipeline is **lossless remux only** (MakeMKV → MKV; ffmpeg disposition remux, no re-encode). Blu-ray / UHD stay native. Optional AI upscale is a **DVD-only derivative** — never replace the remux. See [Optional post-processing: DVD upscale (RTX 4090)](#optional-post-processing-dvd-upscale-rtx-4090).
+**Archive principle:** the pipeline is **lossless remux only** (MakeMKV → MKV; ffmpeg disposition remux, no re-encode). Blu-ray / UHD stay native. Optional AI upscale is a **DVD-only derivative** — never replace the remux. Optional multi-disc **stitch** is also a derivative (keep per-disc masters). See [Optional post-processing: DVD upscale (RTX 4090)](#optional-post-processing-dvd-upscale-rtx-4090) and [Multi-disc / multi-part movies](#multi-disc--multi-part-movies).
 
 **Workflow:** Config-driven **Python pipeline** (`videosripper/pipeline.py`) + YAML manifests. Watchers call pipeline step functions directly — not shell scripts. See [Pipeline orchestration](#pipeline-orchestration). Legacy bash rip scripts are archived in `scripts/archive/`.
 
@@ -22,6 +22,7 @@ Rip SpongeBob SquarePants DVDs losslessly with MakeMKV, rename files for Plex, c
 | Optical drive | Pioneer BD-XD07 USB → `/dev/sr0` |
 | Drive group | User must be in `optical` group; kernel modules: `sg`, `sr_mod`, `usb_storage` |
 | GPU (optional upscale) | NVIDIA RTX 4090 (Ada, 24 GB VRAM, CUDA / TensorRT) — DVD derivative post-processing only |
+| Stitch tools | `ffmpeg` present; install `mkvtoolnix-cli` for preferred `mkvmerge` append (multi-disc) |
 
 ## Directory layout (all on game drive)
 
@@ -41,6 +42,7 @@ Rip SpongeBob SquarePants DVDs losslessly with MakeMKV, rename files for Plex, c
     rip-watcher.py          ← Process 2 → pipeline.process_ready_manifest()
     trigger-map.sh          ← wrapper → python -m videosripper.map_agent
     fix-*.sh                ← host helpers (drive, NAS mounts) only
+    stitch-movie-parts.sh   ← optional lossless multi-disc join (mkvmerge / ffmpeg)
     logs/                     ← running logs (append; rotate at 50k lines, keep .1–.3)
     pipeline.log            ← high-level STAGE / progress (main overview)
     rip.log                 ← high-level rip status
@@ -427,9 +429,9 @@ Use this when **Process 1.5** (`videosripper.map_agent` / Cursor `agent -p`) aut
 - `configs/registry.yaml` — if a similar `disc_name` already has a manifest, copy its `tracks[]` / `skips[]` pattern and episode numbering; do not invent indices from memory.
 - This file — season/disc tables and [Title validation](#title-validation-avoid-wrong--copy-protected-titles) rules.
 
-**1b. Generic volume labels (`DVD_VIDEO`, `VIDEO_TS`, …)**
+**1b. Generic volume labels (uninformative heuristic)**
 
-MakeMKV's `disc_name` is only the filesystem volume label — many commercial DVDs ship as `DVD_VIDEO` with **no on-disc movie title**. Process 1 attaches an `identification` block:
+MakeMKV's `disc_name` is only the filesystem volume label. Many commercial discs ship with uninformative labels (e.g. `DVD_VIDEO`, `DVDVolume`, `VIDEO_TS`, `BD_VIDEO`, `untitled`) — **examples, not an exhaustive list**. Process 1 marks `identification.is_generic_label` via heuristic matching (normalized patterns + a small boilerplate-token vocabulary), then attaches an `identification` block:
 
 | Source | When | Strength |
 |--------|------|----------|
@@ -473,11 +475,12 @@ When `obfuscation.detected` is true (or `title_count` > 50 with many identical n
 
 **6. Required manifest fields**
 
-- Always set `meta.disc_name` from scan `disc_name` (watcher/registry verification) — **even when generic** (`DVD_VIDEO`, `VIDEO_TS`, etc.).
+- Always set `meta.disc_name` from scan `disc_name` (watcher/registry verification) — **even when generic** (uninformative volume label; e.g. `DVD_VIDEO`, `DVDVolume`, `VIDEO_TS`).
 - **`meta.id` / `meta.title` / `output.filename` / ready YAML basename = identified work title**, not the disc label.
   - Good: `title: Scarface (1983)`, `id: scarface-1983`, `filename: Scarface (1983).mkv`, `disc_name: DVD_VIDEO`
-  - Bad: using `DVD_VIDEO` as the movie title or output filename
-- If disc_name is generic, **identify the movie/show first** using `identification` hints (bdmt title, runtime candidates), then box art / web search before writing YAML. Do not invent placeholder titles for NAS.
+  - Bad: using a generic volume label as the movie title or output filename
+  - **Multi-disc movies:** one manifest per disc; filename `Title (Year) - Disc N.mkv` (see [Multi-disc / multi-part movies](#multi-disc--multi-part-movies)) — rip discs independently; optional lossless stitch is a **post** step, not part of MakeMKV.
+- If disc_name is generic (heuristic: uninformative volume label), **identify the movie/show first** using `identification` hints (bdmt title, runtime candidates), then box art / web search before writing YAML. Do not invent placeholder titles for NAS.
 - Set `meta.minlength` to match the scan (default 300).
 - For movies: `title_selection.mode: auto_feature` unless a specific index is proven; include `validation` floors.
 - For TV: map `tracks[].makemkv_title` to TINFO indices from the scan; `skips[]` for play-all, extras, decoys, and skipped angles.
@@ -821,6 +824,198 @@ validation:
 ```
 
 Existing manifests: `configs/spongebob/s8-disc{1,2,3}.yaml`, `configs/movies/ghost-rider-spirit-of-vengeance.yaml`, `configs/movies/scarface-1983.yaml`.
+
+### Multi-disc / multi-part movies
+
+Long theatrical features sometimes ship split across physical discs (e.g. **Pearl Harbor (2001)** 60th Anniversary DVD: Disc 1 ≈ first ~129 min, Disc 2 ≈ remainder + extras). The pipeline still models **one disc → one movie manifest → one MKV**. Joining parts into a single file is an **optional post step** after both remuxes exist — same archive philosophy as [DVD upscale](#optional-post-processing-dvd-upscale-rtx-4090): keep per-disc remux masters; treat a stitch as a derivative (or Plex-facing copy), not a replacement of the masters.
+
+#### 1. Per-disc rip first (required)
+
+| Rule | Convention |
+|------|------------|
+| Manifests | **One YAML per disc** — never combine physical discs in a single MakeMKV rip |
+| `meta.id` | `title-year-discN` (e.g. `pearl-harbor-2001-disc1`) |
+| `meta.title` / `output.filename` | `Title (Year) - Disc N.mkv` (Plex multi-part naming; see below) |
+| `meta.disc_name` | Exact MakeMKV scan label (e.g. `PEARL_HARBOR_DSC1`) |
+| Independence | Rip Disc 1 and Disc 2 separately under the normal makemkv lock |
+| Consistency | If Disc 2+ arrives after Disc 1, match the existing `Title (Year)` stem and the same `- Disc N` suffix style |
+| Validation | Floors are **per-disc** runtime/size (Disc 1 of a split film is not the full theatrical length) |
+| `stream_defaults` | Same on every part (e.g. `audio_default: eng`) so track order/defaults match before any stitch |
+| `post.copy_to_nas` | **`false`** when you plan to stitch (default for multi-part) — keep per-disc masters on game drive only; copy the stitched file to NAS after join (see [NAS copy policy](#6-nas-copy-policy-default-when-stitching)) |
+
+Example ready basename: `staging/ready/pearl-harbor-2001-disc1.yaml` → `Pearl Harbor (2001) - Disc 1.mkv`.
+
+Per-disc manifest snippet (stitch planned):
+
+```yaml
+nas:
+  movies: true
+  share: /mnt/tn-sas/Movies
+post:
+  eject: true
+  copy_to_nas: false   # multi-disc part — masters stay on output/Movies/; NAS gets stitched file only
+```
+
+**MakeMKV / DVD specifics before you decide to stitch:**
+
+- **Feature split across discs** — Disc 1 ends mid-story; Disc 2 continues the feature (sometimes plus extras). Only stitch the **feature** titles, in play order.
+- **Disc 2 = extras only** — common on anniversary sets. Do **not** stitch extras onto the feature; rip extras as separate files (or skip). Lower `--minlength` only if you intentionally want short bonus titles.
+- **Different title counts / playlists** — each disc has its own title list; `auto_feature` / validation floors are per disc. Do not assume Disc 2’s title 0 is “part 2 of title 0 on Disc 1.”
+- **Seamless branching (mostly BD)** — alternate angles / branching playlists are a **single-disc** playlist problem (prefer the correct `.mpls`), not a multi-disc stitch problem. Do not invent a join to “fix” branching.
+- **DVD multi-VOB** — MakeMKV already remuxes a title’s VOB chain into one MKV; you do not need `mkvmerge` “additional parts” for `VTS_01_*.VOB` after a normal title rip.
+
+#### 2. Plex: multi-part files vs one file
+
+[Plex movie naming](https://support.plex.tv/articles/naming-and-organizing-your-movie-media-files/) supports stacked parts in a dedicated movie folder:
+
+```
+/Movies/Title (Year)/Title (Year) - disc1.mkv
+/Movies/Title (Year)/Title (Year) - disc2.mkv
+```
+
+Allowed split tokens (replace `X` with the part number): `cdX`, `discX`, `diskX`, `dvdX`, `partX`, `ptX`. VideosRipper’s `Title (Year) - Disc N.mkv` matches `discX` after normalizing spaces (Plex expects `disc1` / `Disc 1` style suffixes on an otherwise identical stem).
+
+| Approach | When it’s fine | Trade-offs |
+|----------|----------------|------------|
+| **Separate multi-part files** | Quick path after per-disc rip; keep masters as-is on NAS | Plex support is **limited**: not all apps stack; preview/chapter images, stream selection across parts, and some features degrade; max **8** parts; same container + matching audio/subtitle order preferred |
+| **Single combined file** | **Preferred for Plex** when the feature is truly continuous across discs | Best client compatibility; one library item; stitch once after both discs finish |
+
+**Recommendation:** rip and archive per-disc remuxes; for the Movies library, **prefer one stitched file** when Disc 2 continues the feature. Keep multi-part naming only as a temporary/fallback (or if you deliberately refuse to stitch).
+
+#### 3. Lossless stitch (recommended tool + commands)
+
+**Host status (4090 / CachyOS):** `ffmpeg` / `ffprobe` are installed (`/usr/bin/ffmpeg`). **`mkvmerge` is not installed** — install when needed: `sudo pacman -S mkvtoolnix-cli` (package `extra/mkvtoolnix-cli`). Do not install or run heavy package ops mid-rip if the optical pipeline is busy; stitch after both discs are done.
+
+| Tool | Role | Notes |
+|------|------|-------|
+| **`mkvmerge` (preferred)** | Append Matroska files losslessly | Designed for MKV; preserves chapters better than ffmpeg concat; use `+` to **append** (sequential). Bare `mkvmerge -o out a.mkv b.mkv` **adds in parallel** (wrong). |
+| **`ffmpeg` concat demuxer** | Fallback `-c copy` join | Requires **identical** codecs, time base, resolution, frame rate, and matching stream layouts; strips/weakens chapter metadata; timestamp gaps if streams differ in length |
+| **Re-encode** | Last resort | Only when codecs/layouts/resolution mismatch; prefer matching remux settings / same `stream_defaults` so this is unnecessary |
+
+**mkvmerge (recommended):**
+
+```bash
+# After: sudo pacman -S mkvtoolnix-cli
+mkvmerge -o "output/Movies/Title (Year).mkv" \
+  "output/Movies/Title (Year) - Disc 1.mkv" \
+  + "output/Movies/Title (Year) - Disc 2.mkv"
+```
+
+**ffmpeg concat demuxer (fallback when mkvmerge missing):**
+
+```bash
+cat > /tmp/stitch-list.txt <<'EOF'
+file '/mnt/game1/VideosRipper/output/Movies/Title (Year) - Disc 1.mkv'
+file '/mnt/game1/VideosRipper/output/Movies/Title (Year) - Disc 2.mkv'
+EOF
+ffmpeg -f concat -safe 0 -i /tmp/stitch-list.txt -c copy \
+  "output/Movies/Title (Year).mkv"
+```
+
+**Helper:** `scripts/stitch-movie-parts.sh` prefers `mkvmerge`, falls back to ffmpeg, and checks that output duration ≈ sum of inputs (default ±2%).
+
+```bash
+scripts/stitch-movie-parts.sh \
+  -o "output/Movies/Title (Year).mkv" \
+  "output/Movies/Title (Year) - Disc 1.mkv" \
+  "output/Movies/Title (Year) - Disc 2.mkv"
+```
+
+**Validate after stitch:**
+
+```bash
+ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "…/Disc 1.mkv"
+ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "…/Disc 2.mkv"
+ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "…/Title (Year).mkv"
+# Expect: duration(out) ≈ duration(d1) + duration(d2)  (small muxer skew OK)
+```
+
+**When re-encode is required:** mismatched video codec/profile, resolution/PAR, frame rate, or incompatible audio layouts (e.g. Disc 1 stereo vs Disc 2 5.1 with different codec). Fix by re-ripping with consistent track selection, or encode a derivative (not the archive master).
+
+#### 4. When NOT to stitch
+
+- Disc 2 (or later) is **extras / behind-the-scenes only**
+- Parts have **different aspect ratio**, resolution, or video codec
+- Audio/subtitle **layouts differ** and cannot be aligned without re-encode
+- You only need temporary Plex playback and prefer leaving masters as `… - Disc N.mkv`
+- Seamless-branching / alternate-cut selection belongs in the **rip title/playlist choice**, not a join
+
+#### 5. Archival best practice
+
+| Artifact | Keep? | Role |
+|----------|-------|------|
+| Per-disc remux (`… - Disc N.mkv`) | **Yes — master** | Lossless MakeMKV (+ optional disposition remux); re-stitch anytime |
+| Stitched single file (`Title (Year).mkv`) | Optional derivative / Plex copy | Convenience for clients; may live on NAS Movies while masters stay under `output/Movies/` (or a `…/parts/` sibling) |
+| Re-encoded join | Avoid unless forced | Not archival |
+
+Mirror the upscale policy: **never delete the remux masters** just because a stitched file exists. If NAS space is tight, prefer masters on game drive + stitched file on `/mnt/tn-sas/Movies/`, or vice versa — but keep at least one lossless per-disc set until you are sure.
+
+#### 6. NAS copy policy (default when stitching)
+
+**Yes — skip NAS for per-disc parts when you plan to stitch.** The rip pipeline honors `post.copy_to_nas` per manifest (`movie.py` / `runner.py`); there is no automatic stitch→NAS step yet. `scripts/stitch-movie-parts.sh` writes the combined MKV locally only — it does **not** rsync.
+
+| Stage | `post.copy_to_nas` | Where files live |
+|-------|-------------------|------------------|
+| Per-disc rip (`Title (Year) - Disc N.mkv`) | **`false`** (default for multi-part) | Game drive: `output/Movies/` — archival masters |
+| After stitch (`Title (Year).mkv`) | Manual copy today (automation TBD) | NAS Movies: `/mnt/tn-sas/Movies/` — Plex-facing copy |
+
+**After both parts exist and stitch validates**, copy the combined file:
+
+```bash
+cd /mnt/game1/VideosRipper
+
+scripts/stitch-movie-parts.sh \
+  -o "output/Movies/Pearl Harbor (2001).mkv" \
+  "output/Movies/Pearl Harbor (2001) - Disc 1.mkv" \
+  "output/Movies/Pearl Harbor (2001) - Disc 2.mkv"
+
+rsync -ah --info=progress2 \
+  "output/Movies/Pearl Harbor (2001).mkv" \
+  "/mnt/tn-sas/Movies/"
+```
+
+Same rsync pattern as the rip pipeline (`videosripper/nas.py` → `copy_movie_to_share` / `rsync -ah`).
+
+**Optional redundancy (not default):** set `post.copy_to_nas: true` on part manifests if you want Plex multi-part files on NAS *without* stitching, or if you want both per-disc copies and a stitched file on NAS. That doubles NAS usage for the feature.
+
+#### 7. Future pipeline hook (design only — not implemented)
+
+Ideas for a later VideosRipper step (do **not** block optical rip / makemkv lock):
+
+```yaml
+# Option A — declare parts on a parent movie config (post-only)
+kind: movie
+meta:
+  id: pearl-harbor-2001
+  title: Pearl Harbor (2001)
+parts:
+  - disc_name: PEARL_HARBOR_DSC1
+    filename: Pearl Harbor (2001) - Disc 1.mkv
+  - disc_name: PEARL_HARBOR_DSC2
+    filename: Pearl Harbor (2001) - Disc 2.mkv
+stitch:
+  enabled: true
+  output: Pearl Harbor (2001).mkv
+  tool: mkvmerge   # or ffmpeg
+  keep_parts: true
+```
+
+```yaml
+# Option B — post block on the last disc manifest after both exist
+post:
+  stitch:
+    inputs:
+      - Pearl Harbor (2001) - Disc 1.mkv
+      - Pearl Harbor (2001) - Disc 2.mkv
+    output: Pearl Harbor (2001).mkv
+```
+
+Design notes:
+
+- **Ordering / locking:** stitch only when all part files exist and are verified; never hold the makemkv lock; run after `[rip …] DONE` (like upscale).
+- **Validation:** `duration(out) ≈ Σ duration(inputs)` within a tolerance; refuse stitch on codec/layout mismatch (`mkvmerge -J` / `ffprobe` stream compare).
+- **NAS:** per-disc manifests default `post.copy_to_nas: false`; after stitch, copy combined file via `copy_movie_to_share` (see [§6 NAS copy policy](#6-nas-copy-policy-default-when-stitching)).
+- **Until then:** use `scripts/stitch-movie-parts.sh` manually after both discs finish.
 
 ## Environment variables
 

@@ -11,12 +11,47 @@ from videosripper import identify
 
 
 def test_is_generic_disc_name() -> None:
-    assert identify.is_generic_disc_name("DVD_VIDEO")
-    assert identify.is_generic_disc_name("VIDEO_TS")
-    assert identify.is_generic_disc_name("untitled")
-    assert identify.is_generic_disc_name("")
-    assert not identify.is_generic_disc_name("Hudson Hawk")
-    assert not identify.is_generic_disc_name("John Wick Chapter 2")
+    # Uninformative volume labels (heuristic / fuzzy)
+    for label in (
+        "DVDVolume",
+        "DVD_VIDEO",
+        "DVD VOLUME",
+        "DVD_VOLUME",
+        "dvd-volume",
+        "VIDEO_TS",
+        "BD_VIDEO",
+        "untitled",
+        "UNKNOWN",
+        "DISC1",
+        "AVCHD",
+        "BDMV",
+        "blu-ray",
+        "",
+    ):
+        assert identify.is_generic_disc_name(label), label
+
+    # Real titles must not be treated as generic
+    for title in (
+        "Jumper",
+        "JUMPER",
+        "Snatch",
+        "SNATCH",
+        "Scarface (1983)",
+        "What About Bob?",
+        "WHATABOUTBOB",
+        "What About Bob",
+        "THEABYSS",
+        "Hudson Hawk",
+        "John Wick Chapter 2",
+    ):
+        assert not identify.is_generic_disc_name(title), title
+
+
+def test_is_generic_disc_name_boilerplate_combo() -> None:
+    assert identify.is_generic_disc_name("DVD VIDEO VOLUME")
+    assert identify.is_generic_disc_name("vol")
+    assert identify.is_generic_disc_name("MEDIA")
+    assert not identify.is_generic_disc_name("DVD Adventure")  # non-boilerplate token
 
 
 def test_feature_duration_sec_from_list() -> None:

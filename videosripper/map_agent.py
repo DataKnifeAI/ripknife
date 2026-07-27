@@ -61,10 +61,11 @@ def build_map_prompt(
   - Registry: {REGISTRY} — cross-reference similar disc_name matches for track patterns
 
 Naming (critical):
-- meta.disc_name = exact scan disc_name (may be generic like DVD_VIDEO) — used only for disc matching
+- meta.disc_name = exact scan disc_name (may be a generic/uninformative volume label) — used only for disc matching
 - meta.id / meta.title / output.filename / ready YAML basename = the IDENTIFIED work title, NOT the disc label
   Examples: meta.title "Scarface (1983)", id scarface-1983, filename "Scarface (1983).mkv"
-  Bad: using DVD_VIDEO / VIDEO_TS / untitled disc labels as the movie/show name
+  Bad: using uninformative volume labels (e.g. DVD_VIDEO, DVDVolume, VIDEO_TS, untitled) as the movie/show name
+- Generic means an uninformative volume label detected by heuristic (patterns + boilerplate tokens), not an exhaustive string list.
 - If disc_name is generic, research the real title before writing YAML. Use identification hints when present:
   - identification.bluray_title (from BDMV/META/DL/bdmt_*.xml) — strong signal; prefer as meta.title
   - identification.candidates[] (TMDb/OMDb runtime match) — shortlist; pick best fit, do not invent placeholders
