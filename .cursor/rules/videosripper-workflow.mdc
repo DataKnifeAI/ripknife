@@ -1,0 +1,29 @@
+---
+description: VideosRipper git workflow, repo root, and rip conventions
+alwaysApply: true
+---
+
+# VideosRipper agent workflow
+
+## Commit tool changes
+
+When you update VideosRipper (code under `videosripper/`, `scripts/`, `tests/`, `Makefile`, `configs/`, `LLM-RIP-WORKFLOW.md`, or other tracked repo files), **commit to git as part of the workflow**. Do not leave substantial tool changes uncommitted unless the user explicitly says not to commit.
+
+Before committing:
+
+1. Run from git root: `/mnt/game1/VideosRipper` (not `/home/lee/VideosRipper`).
+2. Stage only repo/tool files — never runtime artifacts or secrets.
+3. Use caveman-commit / Conventional Commits: `<type>(<scope>): <imperative summary>`, ≤50 chars when possible.
+
+## Never commit
+
+- `.venv/`, `output/`, `logs/`, ripped `*.mkv`, `.tmp/`
+- Staging workflow artifacts under `staging/` (pending/ready/done/failed job files)
+- Secrets: `.env`, `.env.*`, `*credentials*`, API keys
+
+## Multi-disc movies
+
+- One manifest per disc; output name: `Title (Year) - Disc N.mkv`
+- When stitching parts: set `post.copy_to_nas: false` on each disc manifest
+- Rip discs independently; stitch with `scripts/stitch-movie-parts.sh`
+- Copy **only the stitched file** to NAS after join — not per-disc masters

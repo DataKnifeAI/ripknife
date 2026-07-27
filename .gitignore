@@ -50,5 +50,7 @@ pytest-of-*/
 nohup.out
 nohup*.log
 
-# Cursor local project state
-.cursor/
+# Cursor local project state (rules are tracked)
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
