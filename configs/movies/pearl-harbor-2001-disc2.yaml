@@ -1,0 +1,38 @@
+kind: movie
+meta:
+  id: pearl-harbor-2001-disc2
+  title: Pearl Harbor (2001)
+  disc_name: PEARL_HARBOR_DSC2
+  part: 2
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  dir: Movies
+  filename: Pearl Harbor (2001) - Disc 2.mkv
+nas:
+  movies: true
+  share: /mnt/tn-sas/Movies
+post:
+  eject: true
+  copy_to_nas: false   # multi-disc part — NAS gets stitched file only
+stitch:
+  enabled: true
+  group_id: pearl-harbor-2001
+  expected_parts: 2
+  output_filename: Pearl Harbor (2001).mkv
+  copy_to_nas: true
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+# PEARL_HARBOR_DSC2 = Vista Series Director's Cut (2002) disc 2 of 4.
+# Feature continues from disc 1; titles 2–3 are extras (not stitched).
+title_selection:
+  mode: fixed
+  title: 0
+validation:
+  min_duration_sec: 3000
+  min_size_bytes: 2000000000
+skips:
+  - { makemkv_title: 1, reason: duplicate title (same duration as title 0) }
+  - { makemkv_title: 2, reason: extras (not feature part 2) }
+  - { makemkv_title: 3, reason: extras (not feature part 2) }

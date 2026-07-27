@@ -101,6 +101,11 @@ Manifest requirements:
   - Foreign-language film: audio_default = original language; add subtitle_default eng when English subs should default on
   - Do NOT omit stream_defaults on movies — discs often mark non-English audio as default
 - Match existing manifest style (stream_defaults, nas, post blocks)
+- **Multi-disc movies** (DSC1/DSC2, feature split across discs, user hint):
+  - One manifest per disc; ``meta.part: N`` (1-based); ``output.filename: Title (Year) - Disc N.mkv``
+  - ``post.copy_to_nas: false`` on every part (masters stay on game drive)
+  - ``stitch`` block on every part (same values): ``enabled: true``, ``group_id: title-year``, ``expected_parts: N``, ``output_filename: Title (Year).mkv``, ``copy_to_nas: true``
+  - Rip watcher stitches automatically after all N part MKVs exist (post-rip, no makemkv lock)
 - Optional spot-check: scripts/videosripper preview --title N --chapter 2 --scan-json {scan_json}
 """
 

@@ -428,6 +428,11 @@ def log_remux_stage(detail: str) -> None:
     log_stage("REMUX", process=PROCESS_RIP, detail=detail)
 
 
+def log_stitch_stage(stage: str, detail: str) -> None:
+    """Multi-disc stitch stages (post-rip, outside makemkv lock)."""
+    log_stage(stage, process=PROCESS_RIP, detail=detail)
+
+
 def log_progress(
     stage: str,
     current: int,

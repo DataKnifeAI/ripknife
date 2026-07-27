@@ -531,6 +531,27 @@ def _manifest_label(manifest: TvDiscManifest | MovieManifest) -> str:
     )
 
 
+def _post_rip_movie_stitch(
+    manifest: TvDiscManifest | MovieManifest,
+    logger: logging.Logger,
+) -> None:
+    """Post-rip stitch check (outside makemkv lock). Runs when all parts may be ready."""
+    if not isinstance(manifest, MovieManifest):
+        return
+    if not manifest.stitch or not manifest.stitch.enabled:
+        return
+    from videosripper.stitch import maybe_stitch_after_part
+
+    rcfg = manifest.retry
+    result = maybe_stitch_after_part(
+        manifest,
+        nas_retries=rcfg.nas_retries,
+        nas_delay_sec=rcfg.delay_sec,
+    )
+    if result.message and result.message not in ("stitch disabled",):
+        logger.info("Stitch: %s", result.message)
+
+
 def _verify_and_rip(
     yaml_path: Path,
     manifest: TvDiscManifest | MovieManifest,
@@ -637,8 +658,10 @@ def process_ready_manifest(
         logger.info("Output already complete for %s", yaml_path.name)
         move_manifest_yaml(yaml_path, DONE_DIR)
         log_stage("ALREADY_RIPPED", process=PROCESS_RIP, detail=str(label))
+        _post_rip_movie_stitch(manifest, logger)
         return StepResult(name="process_ready", ok=True, message="already_ripped")
 
+    result: StepResult
     with flock(makemkv_lock_path(manifest.meta.device), blocking=True):
         log_stage(
             "RESCAN",
@@ -652,7 +675,10 @@ def process_ready_manifest(
             move_manifest_yaml(yaml_path, FAILED_DIR, reason="re-scan failed")
             log_stage("RESCAN_FAILED", process=PROCESS_RIP, detail=rescan.message)
             return rescan
-        return _verify_and_rip(yaml_path, manifest, rescan.data["scan_data"], logger)
+        result = _verify_and_rip(yaml_path, manifest, rescan.data["scan_data"], logger)
+    if result.ok:
+        _post_rip_movie_stitch(manifest, logger)
+    return result
 
 
 def _match_ready_manifest_for_scan(
@@ -678,6 +704,9 @@ def run_device_worker_once(device: str, logger: logging.Logger) -> StepResult:
     rips it on that drive. Safe to run concurrently across distinct drives.
     """
     setup_pipeline_logger()
+    stitch_manifest: MovieManifest | None = None
+    result: StepResult | None = None
+
     with flock(makemkv_lock_path(device), blocking=True):
         try:
             scan_data = scan_device_dict(device, 300)
@@ -716,13 +745,22 @@ def run_device_worker_once(device: str, logger: logging.Logger) -> StepResult:
         if already_ripped(manifest):
             move_manifest_yaml(claimed, DONE_DIR)
             log_stage("ALREADY_RIPPED", process=PROCESS_RIP, detail=str(label))
-            return StepResult(name="device_worker", ok=True, message="already_ripped")
+            result = StepResult(name="device_worker", ok=True, message="already_ripped")
+            if isinstance(manifest, MovieManifest):
+                stitch_manifest = manifest
+        else:
+            log_stage(
+                "RESCAN",
+                process=PROCESS_RIP,
+                step=RIP_STEP_RESCAN,
+                total=RIP_STEPS,
+                detail=f"{label} dev={device}",
+            )
+            result = _verify_and_rip(claimed, manifest, scan_data, logger)
+            if result.ok and isinstance(manifest, MovieManifest):
+                stitch_manifest = manifest
 
-        log_stage(
-            "RESCAN",
-            process=PROCESS_RIP,
-            step=RIP_STEP_RESCAN,
-            total=RIP_STEPS,
-            detail=f"{label} dev={device}",
-        )
-        return _verify_and_rip(claimed, manifest, scan_data, logger)
+    if stitch_manifest is not None:
+        _post_rip_movie_stitch(stitch_manifest, logger)
+    assert result is not None
+    return result

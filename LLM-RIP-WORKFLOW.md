@@ -848,12 +848,16 @@ Example ready basename: `staging/ready/pearl-harbor-2001-disc1.yaml` → `Pearl 
 Per-disc manifest snippet (stitch planned):
 
 ```yaml
-nas:
-  movies: true
-  share: /mnt/tn-sas/Movies
+meta:
+  part: 1                        # 1-based; required when stitch.enabled
 post:
-  eject: true
   copy_to_nas: false   # multi-disc part — masters stay on output/Movies/; NAS gets stitched file only
+stitch:
+  enabled: true
+  group_id: pearl-harbor-2001
+  expected_parts: 2
+  output_filename: Pearl Harbor (2001).mkv
+  copy_to_nas: true
 ```
 
 **MakeMKV / DVD specifics before you decide to stitch:**
@@ -952,14 +956,16 @@ Mirror the upscale policy: **never delete the remux masters** just because a sti
 
 #### 6. NAS copy policy (default when stitching)
 
-**Yes — skip NAS for per-disc parts when you plan to stitch.** The rip pipeline honors `post.copy_to_nas` per manifest (`movie.py` / `runner.py`); there is no automatic stitch→NAS step yet. `scripts/stitch-movie-parts.sh` writes the combined MKV locally only — it does **not** rsync.
+**Yes — skip NAS for per-disc parts when you plan to stitch.** The rip pipeline honors `post.copy_to_nas` per manifest (`movie.py` / `runner.py`). After all parts exist, the rip-watcher post-rip hook (`videosripper/stitch.py` → `maybe_stitch_after_part`) stitches and copies the combined file when `stitch.copy_to_nas: true`.
 
 | Stage | `post.copy_to_nas` | Where files live |
 |-------|-------------------|------------------|
 | Per-disc rip (`Title (Year) - Disc N.mkv`) | **`false`** (default for multi-part) | Game drive: `output/Movies/` — archival masters |
-| After stitch (`Title (Year).mkv`) | Manual copy today (automation TBD) | NAS Movies: `/mnt/tn-sas/Movies/` — Plex-facing copy |
+| After stitch (`Title (Year).mkv`) | N/A — use `stitch.copy_to_nas: true` | NAS Movies: `/mnt/tn-sas/Movies/` — Plex-facing copy |
 
-**After both parts exist and stitch validates**, copy the combined file:
+**Automatic (watcher):** declare `stitch.copy_to_nas: true` on part manifests; the hook rsyncs after stitch (same as `copy_movie_to_share` / `rsync -ah`).
+
+**Manual fallback** when stitching outside the watcher:
 
 ```bash
 cd /mnt/game1/VideosRipper
@@ -974,48 +980,55 @@ rsync -ah --info=progress2 \
   "/mnt/tn-sas/Movies/"
 ```
 
-Same rsync pattern as the rip pipeline (`videosripper/nas.py` → `copy_movie_to_share` / `rsync -ah`).
-
 **Optional redundancy (not default):** set `post.copy_to_nas: true` on part manifests if you want Plex multi-part files on NAS *without* stitching, or if you want both per-disc copies and a stitched file on NAS. That doubles NAS usage for the feature.
 
-#### 7. Future pipeline hook (design only — not implemented)
+#### 7. Pipeline hook (implemented)
 
-Ideas for a later VideosRipper step (do **not** block optical rip / makemkv lock):
+After each part rip completes (`[rip 7/7] DONE`), the rip-watcher calls `maybe_stitch_after_part()` **outside the makemkv lock**. It does **not** run inside `rip_movie()`.
 
 ```yaml
-# Option A — declare parts on a parent movie config (post-only)
 kind: movie
 meta:
-  id: pearl-harbor-2001
+  id: pearl-harbor-2001-disc1
   title: Pearl Harbor (2001)
-parts:
-  - disc_name: PEARL_HARBOR_DSC1
-    filename: Pearl Harbor (2001) - Disc 1.mkv
-  - disc_name: PEARL_HARBOR_DSC2
-    filename: Pearl Harbor (2001) - Disc 2.mkv
+  disc_name: PEARL_HARBOR_DSC1
+  part: 1                        # 1-based disc number
+output:
+  dir: Movies
+  filename: Pearl Harbor (2001) - Disc 1.mkv
+post:
+  copy_to_nas: false             # per-disc parts: no NAS
+  eject: true
 stitch:
   enabled: true
-  output: Pearl Harbor (2001).mkv
-  tool: mkvmerge   # or ffmpeg
-  keep_parts: true
+  group_id: pearl-harbor-2001    # links parts (defaults: meta.id minus -discN)
+  expected_parts: 2              # wait until N part MKVs exist on disk
+  output_filename: Pearl Harbor (2001).mkv
+  copy_to_nas: true              # copy stitched file to NAS after join
+nas:
+  movies: true
+  share: /mnt/tn-sas/Movies
 ```
 
-```yaml
-# Option B — post block on the last disc manifest after both exist
-post:
-  stitch:
-    inputs:
-      - Pearl Harbor (2001) - Disc 1.mkv
-      - Pearl Harbor (2001) - Disc 2.mkv
-    output: Pearl Harbor (2001).mkv
-```
+**Every part manifest** declares the same `stitch` block (consistent `group_id`, `expected_parts`, `output_filename`). Only `meta.part` and per-disc `output.filename` / `meta.id` differ.
+
+Pipeline stages (post-rip, unnumbered):
+
+| Stage | When |
+|-------|------|
+| `STITCH_WAITING` | Part rip done; fewer than N parts on disk (`1/2`, etc.) |
+| `STITCH` | All N parts present — stitch starting |
+| `STITCH_OK` | Combined MKV written |
+| `STITCH_FAILED` | mkvmerge/ffmpeg or duration check failed |
+| `COPY` / `COPY_OK` | Stitched file rsync to NAS (`stitch.copy_to_nas: true`) |
 
 Design notes:
 
-- **Ordering / locking:** stitch only when all part files exist and are verified; never hold the makemkv lock; run after `[rip …] DONE` (like upscale).
-- **Validation:** `duration(out) ≈ Σ duration(inputs)` within a tolerance; refuse stitch on codec/layout mismatch (`mkvmerge -J` / `ffprobe` stream compare).
-- **NAS:** per-disc manifests default `post.copy_to_nas: false`; after stitch, copy combined file via `copy_movie_to_share` (see [§6 NAS copy policy](#6-nas-copy-policy-default-when-stitching)).
-- **Until then:** use `scripts/stitch-movie-parts.sh` manually after both discs finish.
+- **Ordering / locking:** stitch only when all part files exist; never hold the makemkv lock; run after `[rip …] DONE`.
+- **Validation:** `duration(out) ≈ Σ duration(inputs)` within `stitch.tolerance_pct` (default 2%); codec/layout warnings via ffprobe.
+- **Tool:** `stitch_movie_parts()` prefers `mkvmerge`, falls back to ffmpeg concat demuxer (`-c copy`).
+- **State:** `staging/stitch/{group_id}.json` tracks registered parts; discovery also globs `Title (Year) - Disc N.mkv` on disk.
+- **Manual fallback:** `scripts/stitch-movie-parts.sh` for ad-hoc joins outside the watcher.
 
 ## Environment variables
 

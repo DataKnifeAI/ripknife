@@ -93,6 +93,11 @@ class TvMeta(MetaBase):
 class MovieMeta(MetaBase):
     title: str = Field(min_length=1)
     disc_pattern: str | None = None
+    part: int | None = Field(
+        default=None,
+        ge=1,
+        description="1-based disc part number for multi-disc movies (used with stitch)",
+    )
 
 
 class OutputConfig(BaseModel):
@@ -196,6 +201,30 @@ class ValidationRules(BaseModel):
     min_size_bytes: int = Field(default=5 * 1024 * 1024 * 1024, ge=0)
 
 
+class StitchConfig(BaseModel):
+    """Multi-disc movie stitch — runs after all part MKVs exist (post-rip, no makemkv lock)."""
+
+    enabled: bool = False
+    expected_parts: int = Field(default=2, ge=2)
+    group_id: str | None = Field(
+        default=None,
+        description="Links part manifests; defaults to meta.id with -discN suffix stripped",
+    )
+    output_filename: str | None = Field(
+        default=None,
+        description="Combined MKV filename; defaults to meta.title + .mkv",
+    )
+    copy_to_nas: bool = Field(
+        default=True,
+        description="Copy stitched file to NAS after join (per-disc post.copy_to_nas stays false)",
+    )
+    tolerance_pct: float = Field(
+        default=2.0,
+        ge=0,
+        description="Max duration mismatch percent after stitch",
+    )
+
+
 class TvDiscManifest(BaseModel):
     kind: Literal["tv_disc"]
     meta: TvMeta
@@ -229,6 +258,7 @@ class MovieManifest(BaseModel):
     title_selection: TitleSelection = Field(default_factory=TitleSelection)
     validation: ValidationRules = Field(default_factory=ValidationRules)
     skips: list[SkipEntry] = Field(default_factory=list)
+    stitch: StitchConfig | None = None
 
     @model_validator(mode="after")
     def validate_movie_output(self) -> MovieManifest:
@@ -236,6 +266,11 @@ class MovieManifest(BaseModel):
             raise ValueError("movie manifests require output.dir and output.filename")
         if self.title_selection.mode == "fixed" and self.title_selection.title is None:
             raise ValueError("title_selection.mode=fixed requires title_selection.title")
+        if self.stitch and self.stitch.enabled:
+            if self.meta.part is None:
+                raise ValueError("stitch.enabled requires meta.part (1-based disc number)")
+            if self.meta.part > self.stitch.expected_parts:
+                raise ValueError("meta.part cannot exceed stitch.expected_parts")
         return self
 
 
@@ -278,3 +313,36 @@ def movie_output_path(manifest: MovieManifest) -> Path:
     from videosripper.paths import OUTPUT_ROOT
 
     return OUTPUT_ROOT / manifest.output.dir / manifest.output.filename
+
+
+_DISC_ID_SUFFIX = re.compile(r"-disc\d+$", re.IGNORECASE)
+_PART_FILENAME = re.compile(r" - Disc (\d+)\.mkv$", re.IGNORECASE)
+
+
+def stitch_group_id(manifest: MovieManifest) -> str | None:
+    if not manifest.stitch or not manifest.stitch.enabled:
+        return None
+    if manifest.stitch.group_id:
+        return manifest.stitch.group_id
+    return _DISC_ID_SUFFIX.sub("", manifest.meta.id)
+
+
+def stitch_output_filename(manifest: MovieManifest) -> str:
+    assert manifest.stitch is not None
+    if manifest.stitch.output_filename:
+        return manifest.stitch.output_filename
+    return f"{manifest.meta.title}.mkv"
+
+
+def stitch_output_path(manifest: MovieManifest) -> Path:
+    from videosripper.paths import OUTPUT_ROOT
+
+    assert manifest.output.dir
+    return OUTPUT_ROOT / manifest.output.dir / stitch_output_filename(manifest)
+
+
+def part_filename_for(manifest: MovieManifest, part: int) -> str:
+    """Expected per-disc output filename: ``Title (Year) - Disc N.mkv``."""
+    if _PART_FILENAME.search(manifest.output.filename or ""):
+        return _PART_FILENAME.sub(f" - Disc {part}.mkv", manifest.output.filename or "")
+    return f"{manifest.meta.title} - Disc {part}.mkv"

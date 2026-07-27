@@ -1,0 +1,34 @@
+kind: movie
+meta:
+  id: pearl-harbor-2001-disc1
+  title: Pearl Harbor (2001)
+  disc_name: PEARL_HARBOR_DSC1
+  part: 1
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  dir: Movies
+  filename: Pearl Harbor (2001) - Disc 1.mkv
+nas:
+  movies: true
+  share: /mnt/tn-sas/Movies
+post:
+  eject: true
+  copy_to_nas: false   # multi-disc part — NAS gets stitched file only
+stitch:
+  enabled: true
+  group_id: pearl-harbor-2001
+  expected_parts: 2
+  output_filename: Pearl Harbor (2001).mkv
+  copy_to_nas: true
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+# PEARL_HARBOR_DSC1 = Vista Series Director's Cut (2002) disc 1 of 4.
+# Feature split: disc 1 ~130 min; disc 2 ~54 min (Doolittle raid / finale).
+title_selection:
+  mode: fixed
+  title: 0
+validation:
+  min_duration_sec: 7200
+  min_size_bytes: 6000000000

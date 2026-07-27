@@ -25,5 +25,5 @@ Before committing:
 
 - One manifest per disc; output name: `Title (Year) - Disc N.mkv`
 - When stitching parts: set `post.copy_to_nas: false` on each disc manifest
-- Rip discs independently; stitch with `scripts/stitch-movie-parts.sh`
+- Rip discs independently; stitch runs post-rip via `videosripper/stitch.py` (rip-watcher hook)
 - Copy **only the stitched file** to NAS after join — not per-disc masters
