@@ -19,4 +19,9 @@
 # Stop / disable:
 #   systemctl --user disable --now videosripper-disc-watcher videosripper-rip-watcher
 #
+# Temp dirs (avoid filling /tmp tmpfs):
+#   VIDEOSRIPPER_TMP=/mnt/game1/VideosRipper/.tmp
+#   TMPDIR=/mnt/game1/VideosRipper/.tmp
+# Both are set in the shipped .service files; override in a drop-in if needed.
+#
 # Do not also run `make watch-all` while units are active (singleton flock).

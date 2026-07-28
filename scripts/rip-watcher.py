@@ -12,6 +12,7 @@ ready manifest, and rips it — so multiple drives rip in parallel.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 import time
@@ -21,9 +22,14 @@ ROOT = Path("/mnt/game1/VideosRipper")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from videosripper.paths import configure_process_tmp  # noqa: E402
+
+configure_process_tmp()
+
 from videosripper.devices import device_slug, resolve_watch_devices  # noqa: E402
 from videosripper.logging_setup import log_stage, log_watcher_waiting  # noqa: E402
 from videosripper.paths import LOG_ROOT  # noqa: E402
+from videosripper.monitor import ensure_drive_available
 from videosripper.pipeline import (  # noqa: E402
     DONE_DIR,
     FAILED_DIR,
@@ -230,9 +236,12 @@ def main() -> int:
 
     if args.devices or args.auto:
         devices = resolve_watch_devices(args.devices, auto=args.auto)
+        for dev in devices:
+            ensure_drive_available(dev)
         log_watcher_waiting(WATCHER_NAME, devices)
         return _run_workers(devices, args, logger)
 
+    ensure_drive_available(os.environ.get("VIDEOSRIPPER_DEVICE", "dev:/dev/sr0"))
     log_watcher_waiting(WATCHER_NAME)
     try:
         with flock(watcher_lock_path("rip-watcher"), blocking=False):

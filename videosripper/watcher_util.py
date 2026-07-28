@@ -328,6 +328,19 @@ def run_videosripper(args: list[str], *, logger: logging.Logger) -> tuple[int, s
     return proc.returncode, output
 
 
+def disc_media_generation(device: str) -> str | None:
+    """Kernel counter that bumps on each disc insert/eject (for scan cache keys)."""
+    block = Path(disc_dev(device)).name
+    for name in ("media_change", "event"):
+        path = Path(f"/sys/block/{block}/device/{name}")
+        if path.is_file():
+            try:
+                return f"{name}={path.read_text().strip()}"
+            except OSError:
+                continue
+    return None
+
+
 def scan_device_dict(device: str, minlength: int = 300) -> dict:
     """Scan disc via MakeMKV Python API; return JSON-serializable summary."""
     from videosripper.makemkv import scan, scan_to_json

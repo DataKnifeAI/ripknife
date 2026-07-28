@@ -49,7 +49,7 @@ Rip SpongeBob SquarePants DVDs losslessly with MakeMKV, rename files for Plex, c
     debug.log               ← makemkv/ffprobe/subprocess detail
     scan.log                ← scan summaries
     error.log               ← ERROR/CRITICAL + exception tracebacks
-    disc-watcher.log / rip-watcher.log / map.log
+    disc-watcher.log / rip-watcher.log / map.log / map-<disc-id>.log
   output/                   ← final MKV files (e.g. output/Season 8/)
   staging/                  ← temp dirs during each title rip (.rip.XXXXXX)
 ```
@@ -206,7 +206,7 @@ Shell remains only for: `scripts/videosripper` launcher, `fix-optical-drive.sh`,
 |--------|---------|
 | `make watch-all` | Start both watchers **detached** (`setsid -f nohup …`) → `logs/nohup-watch-*.log` |
 | `make watch-stop` | `pkill` the python watcher processes (logs `WATCHER_STOPPED` in `pipeline.log`) |
-| `make watch-restart` | Stop → brief pause → start (do **not** while `makemkvcon` is mid-rip) |
+| `make watch-restart` | Stop → brief pause → start. On startup each watcher calls `ensure_drive_available` — orphan `makemkvcon` (PPID=1 / dead parent after SIGTERM mid-rip) get SIGTERM→SIGKILL before scan/preflight. **Do not** restart mid-rip unless you intend to kill the orphan. |
 | `make watch-status` | Running/not, last heartbeat age, disc present |
 
 `setsid` is required: plain `nohup … &` keeps watchers in the make/shell process group, so when an agent or terminal tears that group down with **SIGTERM**, both die **silently** (`nohup` only ignores SIGHUP). That was the 2026-07-25 ~20:12 failure mode after a live `make watch-restart` from an agent shell.
@@ -249,6 +249,11 @@ Post-rip detail inside RIP (unnumbered `[rip]` lines, not part of N/7):
 Insert-side sub-stage: **IDENTIFY** (unnumbered `[insert]`) reports what bdmt/runtime hints
 produced (`generic=`, `bdmt=`, `candidates=`, `feature=`) — previously a generic-label disc
 jumped SCAN → PENDING with no trace of why the map agent got (or missed) a real title.
+
+**SCAN_CACHED** (step 1 substitute): when the same disc is still loaded (`media_generation`
+in pending meta matches sysfs `media_change` / `event`, scan JSON younger than
+`VIDEOSRIPPER_SCAN_CACHE_SEC`, default 24h), disc-watcher skips makemkv info and reuses
+`staging/pending/*.scan.json`.
 
 After `[rip …] DONE`, the remux is the archive master. **Optional DVD upscale** would be a later, separate step on those finished MKVs — not part of the numbered rip pipeline today. See [Optional post-processing: DVD upscale (RTX 4090)](#optional-post-processing-dvd-upscale-rtx-4090).
 
@@ -420,6 +425,8 @@ Some Blu-rays expose hundreds of playlists with the **same name and duration** (
 ### Title research checklist for LLM mapper
 
 Use this when **Process 1.5** (`videosripper.map_agent` / Cursor `agent -p`) authors `staging/ready/<disc-id>.yaml` from `staging/pending/*.scan.json`. Wrong title picks waste hours on copy-protect loops, decoy playlists, or scene-jump dummies — research before writing YAML.
+
+Background maps stream agent stdout/stderr to `logs/map-<disc-id>.log` (prompt/launch metadata stays in `logs/map.log`). Tail live: `tail -F logs/map-<disc-id>.log`.
 
 **1. Read all inputs**
 
@@ -2050,7 +2057,7 @@ Resume: `scripts/videosripper rip configs/movies/scarface-1983.yaml`
 | Wrong episode names | Re-scan disc; fix manifest `tracks[]`; do not guess from prior disc |
 | Home disk full | Ensure output/staging stay on `/mnt/game1` (1.5 TB free) |
 | Plex wrong episode metadata | Use DVD-order `Nx##` filenames + set Plex episode ordering to **DVD** |
-| Two rips on same drive | Never run parallel `videosripper rip` / `makemkvcon mkv` on the **same** `/dev/srN`; per-drive `makemkv-<slug>` lock serializes it, CLI warns `=== ALERT === DUPLICATE MAKEKV`. Parallel rips across **different** drives are supported (`--auto` / `--device`). |
+| Two rips on same drive | Never run parallel `videosripper rip` / `makemkvcon mkv` on the **same** `/dev/srN`; per-drive `makemkv-<slug>` lock serializes it. Live peer rips log `=== ALERT === DUPLICATE MAKEKV`; stale orphans (watcher killed mid-rip) log `=== ALERT === ORPHAN MAKEKV` and are auto-killed on watcher startup / preflight / scan. Parallel rips across **different** drives are supported (`--auto` / `--device`). |
 | Disc ejected during scan | Scan/dry-run/validate never eject; successful real `rip` with `post.eject: true` ejects on success; exhausted disc-open/stall retries also eject for inspection — re-insert before re-running |
 | Post-rip eject reports OK but disc still in drive (Pioneer slot loader) | `eject_disc` verifies with `media_present()` after each attempt (poll up to ~5s); retries up to **3 times**; then `=== STAGE EJECT_FAILED` + `=== ALERT === USER INTERVENTION REQUIRED — eject failed after 3 attempts`. Rip **DONE** is unchanged — eject manually (`eject /dev/srN`) |
 | Disc ejects **before OS reads it** (no scan/rip yet) | **Usually not a documented firmware “auto-eject” policy.** Pioneer BDR-XS07U slot-loader: common causes are **USB power** (use USB 3 direct port or optional DC adapter), **dirty/disc-fit** (clean; re-seat several times), **mechanical wear** (tray-position sensor / eject motor — forum reports on XS07 after hundreds of rips). Region mismatch, bad TOC, and copy-protection failures normally return SCSI errors to software **without** ejecting. Linux shows `Medium not present - tray open` on *any* eject (software or drive button); correlate with `pipeline.log` / `EJECT` stage. Try: `echo on > /sys/block/sr0/device/power/control` (disable USB autosuspend), different USB port, insert with watchers stopped (`make watch-stop`), watch `journalctl -kf` + `udevadm monitor` while inserting. Firmware settings (region, Quiet Drive, PureRead) need **Pioneer BD Drive Utility on Windows** — no Linux tool. fw 1.04 is current; do not downgrade (UHD-capable units lose libre fw). |
@@ -2064,6 +2071,7 @@ Resume: `scripts/videosripper rip configs/movies/scarface-1983.yaml`
 ### Alert log examples (grep `=== ALERT ===`)
 
 ```
+=== ALERT === ORPHAN MAKEKV — 1 stale makemkvcon on dev:/dev/sr0; recovering drive
 === ALERT === DUPLICATE MAKEKV — another makemkvcon is using dev:/dev/sr0
 === ALERT === Failed to open disc (Failed to open disc); Action: after retries exhaust the disc is ejected — ...
 === ALERT === RETRY 1/3 — disc preflight failed; waiting 30s before retry: ...

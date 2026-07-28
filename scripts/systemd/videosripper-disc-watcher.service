@@ -25,6 +25,8 @@ StartLimitBurst=5
 Type=simple
 WorkingDirectory=/mnt/game1/VideosRipper
 Environment=PYTHONUNBUFFERED=1
+Environment=VIDEOSRIPPER_TMP=/mnt/game1/VideosRipper/.tmp
+Environment=TMPDIR=/mnt/game1/VideosRipper/.tmp
 # Source MakeMKV library path if present
 EnvironmentFile=-%h/.config/environment.d/makemkv.conf
 ExecStart=/mnt/game1/VideosRipper/.venv/bin/python /mnt/game1/VideosRipper/scripts/disc-watcher.py --auto

@@ -34,6 +34,15 @@ def ensure_tmp_root() -> Path:
     return TMP_ROOT
 
 
+def configure_process_tmp() -> Path:
+    """Point process-wide temp (TMPDIR, Java) at game-drive TMP_ROOT."""
+    root = ensure_tmp_root()
+    tmp = str(root)
+    for key in ("TMPDIR", "TMP", "TEMP", "JAVA_TMPDIR"):
+        os.environ.setdefault(key, tmp)
+    return root
+
+
 def disc_dev(device: str) -> str:
     """Return block device path from MakeMKV device string (e.g. dev:/dev/sr0)."""
     if device.startswith("dev:"):

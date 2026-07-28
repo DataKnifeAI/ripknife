@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
+from videosripper.paths import configure_process_tmp
 from videosripper.logging_setup import (
     log_exception,
     log_scan,
@@ -511,6 +512,7 @@ def identify_cmd(
 
 
 def main() -> None:
+    configure_process_tmp()
     app()
 
 

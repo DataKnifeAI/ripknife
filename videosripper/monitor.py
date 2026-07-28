@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import signal
 import subprocess
 import threading
 import time
@@ -158,12 +159,58 @@ def log_makemkv_failure(exc: MakeMkvProcessError) -> None:
     logger.error("%s %s", ALERT_PREFIX, exc)
 
 
-def find_duplicate_makemkv(device: str) -> list[str]:
-    """Return command lines of other makemkvcon processes on the same device."""
+_WATCHER_MARKERS = (
+    "rip-watcher",
+    "disc-watcher",
+    "videosripper",
+    "makemkvcon",
+)
+
+
+@dataclass(frozen=True)
+class MakemkvProcess:
+    pid: int
+    ppid: int
+    args: str
+
+
+def _proc_alive(pid: int) -> bool:
+    return pid > 0 and Path(f"/proc/{pid}").is_dir()
+
+
+def _proc_state(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().split()[2]
+    except (OSError, IndexError):
+        return None
+
+
+def _proc_cmdline(pid: int) -> str:
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return ""
+    if not raw:
+        return ""
+    return raw.replace(b"\0", b" ").decode("utf-8", errors="replace").strip()
+
+
+def _is_active_videosripper_parent(pid: int) -> bool:
+    """True when ``pid`` is a live rip-watcher / disc-watcher / CLI parent."""
+    if not _proc_alive(pid):
+        return False
+    if _proc_state(pid) == "Z":
+        return False
+    cmd = _proc_cmdline(pid)
+    return any(marker in cmd for marker in _WATCHER_MARKERS)
+
+
+def list_makemkv_processes(device: str) -> list[MakemkvProcess]:
+    """Return makemkvcon processes targeting ``device``."""
     dev_block = disc_dev(device)
     try:
         proc = subprocess.run(
-            ["ps", "-eo", "pid=,args="],
+            ["ps", "-eo", "pid=,ppid=,args="],
             capture_output=True,
             text=True,
             check=False,
@@ -172,28 +219,185 @@ def find_duplicate_makemkv(device: str) -> list[str]:
         return []
     if proc.returncode != 0:
         return []
-    matches: list[str] = []
+    matches: list[MakemkvProcess] = []
     for line in proc.stdout.splitlines():
         line = line.strip()
         if "makemkvcon" not in line:
             continue
-        if dev_block in line or device in line:
-            matches.append(line)
+        if dev_block not in line and device not in line:
+            continue
+        parts = line.split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid, ppid = int(parts[0]), int(parts[1])
+        except ValueError:
+            continue
+        matches.append(MakemkvProcess(pid=pid, ppid=ppid, args=parts[2]))
     return matches
 
 
-def warn_duplicate_makemkv(device: str) -> bool:
-    dupes = find_duplicate_makemkv(device)
-    if not dupes:
+def find_duplicate_makemkv(device: str) -> list[str]:
+    """Return command lines of other makemkvcon processes on the same device."""
+    return [f"{p.pid} {p.args}" for p in list_makemkv_processes(device)]
+
+
+def is_orphan_makemkv(proc: MakemkvProcess, *, exclude_pids: set[int] | None = None) -> bool:
+    """True for stale makemkvcon after watcher death (PPID=1 / dead parent).
+
+    Live rip-watcher or disc-watcher parents are treated as legitimate concurrent
+    use — do not kill those.
+    """
+    if exclude_pids and proc.pid in exclude_pids:
         return False
-    logger.warning("%s DUPLICATE MAKEKV — another makemkvcon is using %s", ALERT_PREFIX, device)
-    for proc_line in dupes:
-        logger.warning("%s   %s", ALERT_PREFIX, proc_line)
+    if proc.ppid <= 1:
+        return True
+    if not _proc_alive(proc.ppid):
+        return True
+    if _proc_state(proc.ppid) == "Z":
+        return True
+    if _is_active_videosripper_parent(proc.ppid):
+        return False
+    return False
+
+
+def _fuser_holds_device(device: str) -> set[int]:
+    dev_path = disc_dev(device)
+    try:
+        proc = subprocess.run(
+            ["fuser", dev_path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return set()
+    pids: set[int] = set()
+    for chunk in (proc.stdout, proc.stderr):
+        for token in chunk.replace(dev_path, " ").split():
+            if token.isdigit():
+                pids.add(int(token))
+    return pids
+
+
+def _wait_pids_exit(pids: set[int], *, timeout_sec: float) -> set[int]:
+    deadline = time.monotonic() + timeout_sec
+    remaining = set(pids)
+    while remaining and time.monotonic() < deadline:
+        remaining = {pid for pid in remaining if _proc_alive(pid)}
+        if not remaining:
+            break
+        time.sleep(0.25)
+    return remaining
+
+
+def recover_orphan_makemkv(
+    device: str,
+    *,
+    term_wait_sec: float = 5.0,
+    kill_wait_sec: float = 3.0,
+) -> bool:
+    """SIGTERM/SIGKILL orphan makemkvcon on ``device``; return True if any recovered."""
+    procs = list_makemkv_processes(device)
+    orphans = [p for p in procs if is_orphan_makemkv(p)]
+    if not orphans:
+        return False
+
     logger.warning(
-        "%s Action: wait for the existing rip to finish, or kill it before starting another",
+        "%s ORPHAN MAKEKV — %d stale makemkvcon on %s; recovering drive",
         ALERT_PREFIX,
+        len(orphans),
+        device,
     )
+    for proc in orphans:
+        logger.warning("%s   pid=%d ppid=%d %s", ALERT_PREFIX, proc.pid, proc.ppid, proc.args)
+
+    termed: set[int] = set()
+    for proc in orphans:
+        try:
+            os.kill(proc.pid, signal.SIGTERM)
+            termed.add(proc.pid)
+        except ProcessLookupError:
+            continue
+        except OSError as exc:
+            logger.warning("%s SIGTERM pid=%d failed: %s", ALERT_PREFIX, proc.pid, exc)
+
+    survivors = _wait_pids_exit(termed, timeout_sec=term_wait_sec)
+    if survivors:
+        logger.warning(
+            "%s ORPHAN MAKEKV — SIGKILL %d survivor(s) on %s",
+            ALERT_PREFIX,
+            len(survivors),
+            device,
+        )
+        for pid in survivors:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                survivors.discard(pid)
+            except OSError as exc:
+                logger.warning("%s SIGKILL pid=%d failed: %s", ALERT_PREFIX, pid, exc)
+        survivors = _wait_pids_exit(survivors, timeout_sec=kill_wait_sec)
+
+    if survivors:
+        logger.error(
+            "%s ORPHAN MAKEKV — drive still held after recovery on %s (pids=%s)",
+            ALERT_PREFIX,
+            device,
+            ", ".join(str(p) for p in sorted(survivors)),
+        )
+        return False
+
+    holders = _fuser_holds_device(device)
+    if holders:
+        logger.warning(
+            "%s DRIVE STILL HELD — %s users: pids=%s (non-makemkv; not killed)",
+            ALERT_PREFIX,
+            device,
+            ", ".join(str(p) for p in sorted(holders)),
+        )
+    else:
+        logger.info("Drive recovery OK: %s clear", device)
     return True
+
+
+def ensure_drive_available(device: str) -> bool:
+    """Recover orphan makemkvcon; warn on legitimate concurrent use.
+
+    Call before makemkv info/mkv/scan. Returns True when no duplicate remains
+    or orphans were cleared; False when a live peer rip still holds the drive.
+    """
+    recovered = recover_orphan_makemkv(device)
+    procs = list_makemkv_processes(device)
+    if not procs:
+        return True
+
+    live = [p for p in procs if not is_orphan_makemkv(p)]
+    if not live:
+        return recovered
+
+    logger.warning("%s DUPLICATE MAKEKV — another makemkvcon is using %s", ALERT_PREFIX, device)
+    for proc in live:
+        logger.warning("%s   pid=%d ppid=%d %s", ALERT_PREFIX, proc.pid, proc.ppid, proc.args)
+    if recovered:
+        logger.warning(
+            "%s Recovered orphan(s) but %d live makemkvcon remain on %s",
+            ALERT_PREFIX,
+            len(live),
+            device,
+        )
+    else:
+        logger.warning(
+            "%s Action: wait for the existing rip to finish, or kill it before starting another",
+            ALERT_PREFIX,
+        )
+    return False
+
+
+def warn_duplicate_makemkv(device: str) -> bool:
+    """Legacy entry: recover orphans first, then warn on live duplicates."""
+    ensure_drive_available(device)
+    return bool(list_makemkv_processes(device))
 
 
 def preflight_disc_open(
@@ -250,6 +454,7 @@ def _preflight_disc_open_once(
     """Single makemkv info attempt; raise DiscOpenError on failure."""
     from videosripper.makemkv import makemkv_env
 
+    ensure_drive_available(device)
     logger.info("=== Preflight: disc access (timeout %ds) ===", timeout_sec)
     cmd = [
         str(MAKEMKV_BIN),

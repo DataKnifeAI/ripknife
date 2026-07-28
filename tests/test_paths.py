@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -66,3 +67,25 @@ def test_tmp_root_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> N
     finally:
         monkeypatch.delenv("VIDEOSRIPPER_TMP", raising=False)
         importlib.reload(paths)
+
+
+def test_configure_process_tmp_sets_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "game-tmp"
+    monkeypatch.setattr(paths, "TMP_ROOT", target)
+    for key in ("TMPDIR", "TMP", "TEMP", "JAVA_TMPDIR"):
+        monkeypatch.delenv(key, raising=False)
+    assert paths.configure_process_tmp() == target
+    assert target.is_dir()
+    for key in ("TMPDIR", "TMP", "TEMP", "JAVA_TMPDIR"):
+        assert os.environ[key] == str(target)
+
+
+def test_configure_process_tmp_respects_existing_tmpdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    custom = tmp_path / "custom-tmp"
+    custom.mkdir()
+    monkeypatch.setenv("TMPDIR", str(custom))
+    monkeypatch.setattr(paths, "TMP_ROOT", tmp_path / "default-tmp")
+    paths.configure_process_tmp()
+    assert os.environ["TMPDIR"] == str(custom)

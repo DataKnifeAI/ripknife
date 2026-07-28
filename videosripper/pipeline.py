@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -38,7 +39,13 @@ from videosripper.paths import STAGING_ROOT
 from videosripper.registry import load_registry, manifest_matches_scan
 from videosripper.runner import rip_tv_disc
 from videosripper.title_verify import format_title_issues, validate_manifest_titles
-from videosripper.watcher_util import flock, makemkv_lock_path, scan_device_dict, slugify_disc_id
+from videosripper.watcher_util import (
+    disc_media_generation,
+    flock,
+    makemkv_lock_path,
+    scan_device_dict,
+    slugify_disc_id,
+)
 
 PENDING_DIR = STAGING_ROOT / "pending"
 READY_DIR = STAGING_ROOT / "ready"
@@ -103,6 +110,58 @@ def run_parallel(steps: list[tuple[str, Callable[[], StepResult]]]) -> list[Step
     return [r for r in results if r is not None]
 
 
+# Reuse pending scan when the same disc is still loaded (skips slow makemkv info).
+SCAN_CACHE_MAX_AGE_SEC = int(os.environ.get("VIDEOSRIPPER_SCAN_CACHE_SEC", "86400"))
+
+
+def _parse_scanned_at(value: str) -> float | None:
+    try:
+        from datetime import datetime, timezone
+
+        dt = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def find_cached_pending_scan(
+    device: str,
+    media_gen: str | None,
+    *,
+    max_age_sec: int = SCAN_CACHE_MAX_AGE_SEC,
+) -> PendingDisc | None:
+    """Return a fresh pending scan for the same loaded disc, if any."""
+    if media_gen is None or not PENDING_DIR.is_dir():
+        return None
+    now = time.time()
+    for meta_path in sorted(PENDING_DIR.glob("*.meta.json")):
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if meta.get("device") != device or meta.get("media_generation") != media_gen:
+            continue
+        scanned_at = _parse_scanned_at(meta.get("scanned_at", ""))
+        if scanned_at is None or now - scanned_at > max_age_sec:
+            continue
+        disc_id = meta.get("id") or meta_path.stem.removesuffix(".meta")
+        scan_json = PENDING_DIR / f"{disc_id}.scan.json"
+        if not scan_json.is_file():
+            continue
+        try:
+            scan_data = json.loads(scan_json.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        return PendingDisc(
+            disc_id=disc_id,
+            disc_name=meta.get("disc_name", scan_data.get("disc_name", "")),
+            scan_json=scan_json,
+            meta_json=meta_path,
+            scan_data=scan_data,
+        )
+    return None
+
+
 def step_scan_disc(device: str, minlength: int, logger: logging.Logger) -> StepResult:
     """Scan inserted disc (MAKEMKV — serial per drive)."""
     try:
@@ -157,6 +216,9 @@ def step_write_pending(
         "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "identification": hints.to_dict(),
     }
+    media_gen = disc_media_generation(device)
+    if media_gen is not None:
+        meta["media_generation"] = media_gen
     if preferred_id != disc_id:
         meta["preferred_id"] = preferred_id
         meta["identified_title"] = best
@@ -403,32 +465,45 @@ def handle_disc_insert(
 ) -> StepResult:
     """Process 1: scan → pending → registry hit OR background map."""
     setup_pipeline_logger()
-    log_stage(
-        "SCAN",
-        process=PROCESS_INSERT,
-        step=1,
-        total=INSERT_STEPS,
-        detail=f"device={device}",
-    )
-    scan_result = step_scan_disc(device, minlength, logger)
-    if not scan_result.ok:
-        log_stage("SCAN_FAILED", process=PROCESS_INSERT, detail=scan_result.message)
-        return scan_result
+    media_gen = disc_media_generation(device)
+    cached = find_cached_pending_scan(device, media_gen)
+    if cached is not None:
+        log_stage(
+            "SCAN_CACHED",
+            process=PROCESS_INSERT,
+            step=1,
+            total=INSERT_STEPS,
+            detail=f"device={device} id={cached.disc_id} ({cached.disc_name})",
+        )
+        pending = cached
+        scan_data = cached.scan_data
+    else:
+        log_stage(
+            "SCAN",
+            process=PROCESS_INSERT,
+            step=1,
+            total=INSERT_STEPS,
+            detail=f"device={device}",
+        )
+        scan_result = step_scan_disc(device, minlength, logger)
+        if not scan_result.ok:
+            log_stage("SCAN_FAILED", process=PROCESS_INSERT, detail=scan_result.message)
+            return scan_result
 
-    scan_data = scan_result.data["scan_data"]
-    from videosripper.post_rip_verify import warn_title_count_explosion
+        scan_data = scan_result.data["scan_data"]
+        from videosripper.post_rip_verify import warn_title_count_explosion
 
-    title_count = len(scan_data.get("titles", []))
-    warn_title_count_explosion(title_count)
-    log_progress(
-        "SCAN",
-        title_count,
-        title_count,
-        process=PROCESS_INSERT,
-        detail=f"titles found ({scan_data.get('disc_name', '?')})",
-    )
+        title_count = len(scan_data.get("titles", []))
+        warn_title_count_explosion(title_count)
+        log_progress(
+            "SCAN",
+            title_count,
+            title_count,
+            process=PROCESS_INSERT,
+            detail=f"titles found ({scan_data.get('disc_name', '?')})",
+        )
 
-    pending = step_write_pending(scan_data, device=device, minlength=minlength)
+        pending = step_write_pending(scan_data, device=device, minlength=minlength)
     _log_identify(pending)
     log_stage(
         "PENDING",
@@ -708,6 +783,9 @@ def run_device_worker_once(device: str, logger: logging.Logger) -> StepResult:
     result: StepResult | None = None
 
     with flock(makemkv_lock_path(device), blocking=True):
+        from videosripper.monitor import ensure_drive_available
+
+        ensure_drive_available(device)
         try:
             scan_data = scan_device_dict(device, 300)
         except Exception as exc:  # no disc / drive busy — idle

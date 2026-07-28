@@ -172,3 +172,104 @@ def test_build_map_prompt_includes_disc_id_and_paths(tmp_path: Path) -> None:
     assert str(scan_json) in prompt
     assert "staging/ready/" in prompt
     assert "meta.disc_name = exact scan disc_name" in prompt
+
+
+def test_find_cached_pending_scan_reuses_fresh_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    monkeypatch.setattr(pipeline, "PENDING_DIR", pending)
+    monkeypatch.setattr(pipeline, "SCAN_CACHE_MAX_AGE_SEC", 86400)
+
+    scan_data = {"disc_name": "Test Disc", "titles": [{"index": 0}]}
+    (pending / "test-disc.scan.json").write_text(
+        __import__("json").dumps(scan_data), encoding="utf-8"
+    )
+    meta = {
+        "id": "test-disc",
+        "disc_name": "Test Disc",
+        "device": "dev:/dev/sr0",
+        "media_generation": "media_change=3",
+        "scanned_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
+    }
+    (pending / "test-disc.meta.json").write_text(
+        __import__("json").dumps(meta), encoding="utf-8"
+    )
+
+    cached = pipeline.find_cached_pending_scan("dev:/dev/sr0", "media_change=3")
+    assert cached is not None
+    assert cached.disc_id == "test-disc"
+    assert cached.scan_data["disc_name"] == "Test Disc"
+
+
+def test_find_cached_pending_scan_misses_stale_media_gen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    monkeypatch.setattr(pipeline, "PENDING_DIR", pending)
+
+    meta = {
+        "id": "test-disc",
+        "device": "dev:/dev/sr0",
+        "media_generation": "media_change=2",
+        "scanned_at": "2026-01-01T00:00:00Z",
+    }
+    (pending / "test-disc.meta.json").write_text(
+        __import__("json").dumps(meta), encoding="utf-8"
+    )
+    (pending / "test-disc.scan.json").write_text("{}", encoding="utf-8")
+
+    assert pipeline.find_cached_pending_scan("dev:/dev/sr0", "media_change=3") is None
+
+
+def test_handle_disc_insert_uses_scan_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import logging
+
+    pending = tmp_path / "pending"
+    ready = tmp_path / "ready"
+    pending.mkdir()
+    ready.mkdir()
+    monkeypatch.setattr(pipeline, "PENDING_DIR", pending)
+    monkeypatch.setattr(pipeline, "READY_DIR", ready)
+    monkeypatch.setattr(pipeline, "setup_pipeline_logger", lambda: None)
+    monkeypatch.setattr(pipeline, "log_stage", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "log_progress", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "_log_identify", lambda p: None)
+    monkeypatch.setattr(pipeline, "disc_media_generation", lambda dev: "media_change=1")
+
+    scan_data = {"disc_name": "Cached Disc", "titles": [{"index": 0}]}
+    (pending / "cached-disc.scan.json").write_text(
+        __import__("json").dumps(scan_data), encoding="utf-8"
+    )
+    meta = {
+        "id": "cached-disc",
+        "disc_name": "Cached Disc",
+        "device": "dev:/dev/sr0",
+        "media_generation": "media_change=1",
+        "scanned_at": __import__("time").strftime("%Y-%m-%dT%H:%M:%SZ", __import__("time").gmtime()),
+    }
+    (pending / "cached-disc.meta.json").write_text(
+        __import__("json").dumps(meta), encoding="utf-8"
+    )
+
+    scanned = {"called": False}
+
+    def fail_scan(*args, **kwargs):
+        scanned["called"] = True
+        raise AssertionError("scan should be skipped")
+
+    monkeypatch.setattr(pipeline, "step_scan_disc", fail_scan)
+    monkeypatch.setattr(pipeline, "step_registry_lookup", lambda name: None)
+    monkeypatch.setattr(
+        pipeline,
+        "step_trigger_map_async",
+        lambda pending, logger: pipeline.StepResult(name="map", ok=True),
+    )
+
+    result = pipeline.handle_disc_insert("dev:/dev/sr0", 300, logging.getLogger("test"))
+    assert result.ok
+    assert scanned["called"] is False

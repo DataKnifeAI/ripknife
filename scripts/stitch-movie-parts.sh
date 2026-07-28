@@ -4,6 +4,12 @@
 # See LLM-RIP-WORKFLOW.md → "Multi-disc / multi-part movies".
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=videosripper-common.sh
+source "${SCRIPT_DIR}/videosripper-common.sh"
+mkdir -p "$TMP_ROOT"
+export TMPDIR="$TMP_ROOT"
+
 usage() {
   cat <<'EOF'
 Usage: stitch-movie-parts.sh [options] -o OUTPUT part1.mkv part2.mkv [part3.mkv ...]
@@ -143,7 +149,7 @@ if [[ "$TOOL" == mkvmerge ]]; then
   done
   mkvmerge "${args[@]}"
 else
-  list="$(mktemp "${TMPDIR:-/tmp}/stitch-XXXXXX.txt")"
+  list="$(mktemp "${TMP_ROOT}/stitch-XXXXXX.txt")"
   trap 'rm -f "$list"' EXIT
   for p in "${PARTS[@]}"; do
     # concat demuxer: escape single quotes in paths

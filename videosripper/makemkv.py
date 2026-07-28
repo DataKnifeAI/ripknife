@@ -95,7 +95,12 @@ def duration_to_seconds(duration: str) -> int:
 
 
 def makemkv_env() -> dict[str, str]:
+    from videosripper.paths import ensure_tmp_root
+
     env = os.environ.copy()
+    tmp = str(ensure_tmp_root())
+    for key in ("TMPDIR", "TMP", "TEMP", "JAVA_TMPDIR"):
+        env.setdefault(key, tmp)
     if MAKEMKV_CONF.is_file():
         for line in MAKEMKV_CONF.read_text(encoding="utf-8").splitlines():
             line = line.strip()
@@ -283,6 +288,9 @@ def _run_makemkv_streaming(
 
 
 def scan(device: str, minlength: int = 300, *, timeout_sec: int | None = None) -> ScanResult:
+    from videosripper.monitor import ensure_drive_available
+
+    ensure_drive_available(device)
     cmd = [
         str(MAKEMKV_BIN),
         "info",

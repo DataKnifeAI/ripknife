@@ -31,6 +31,8 @@ include = ["videosripper*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# Game-drive basetemp — tests write multi-GB fixtures (post_rip_verify); default /tmp tmpfs fills fast.
+addopts = ["--basetemp=.pytest-tmp"]
 
 [tool.ruff]
 line-length = 100

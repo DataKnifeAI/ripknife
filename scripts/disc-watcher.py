@@ -19,9 +19,14 @@ ROOT = Path("/mnt/game1/VideosRipper")
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from videosripper.paths import configure_process_tmp  # noqa: E402
+
+configure_process_tmp()
+
 from videosripper.devices import device_slug, resolve_watch_devices  # noqa: E402
 from videosripper.logging_setup import log_stage, log_watcher_waiting  # noqa: E402
 from videosripper.paths import LOG_ROOT  # noqa: E402
+from videosripper.monitor import ensure_drive_available
 from videosripper.pipeline import handle_disc_insert  # noqa: E402
 from videosripper.watcher_util import (  # noqa: E402
     flock,
@@ -179,6 +184,8 @@ def main() -> int:
         args.debounce_sec,
     )
     log_watcher_waiting(WATCHER_NAME, devices)
+    for dev in devices:
+        ensure_drive_available(dev)
     touch_heartbeat(WATCHER_NAME, extra={"devices": devices})
 
     if len(devices) == 1:

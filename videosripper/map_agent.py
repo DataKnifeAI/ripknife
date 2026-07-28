@@ -10,6 +10,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TextIO
 
 from videosripper.paths import LOG_ROOT, ROOT
 
@@ -30,6 +31,21 @@ def append_map_log(message: str) -> None:
     MAP_LOG.parent.mkdir(parents=True, exist_ok=True)
     with MAP_LOG.open("a", encoding="utf-8") as handle:
         handle.write(_utc_log_line(message) + "\n")
+
+
+def agent_output_log_path(disc_id: str) -> Path:
+    """Per-disc Cursor agent CLI stdout/stderr (safe for concurrent background maps)."""
+    return LOG_ROOT / f"map-{disc_id}.log"
+
+
+def _open_agent_output_log(disc_id: str, *, background: bool) -> tuple[Path, TextIO]:
+    path = agent_output_log_path(disc_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    handle = path.open("a", encoding="utf-8")
+    mode = "background" if background else "foreground"
+    handle.write(_utc_log_line(f"AGENT_OUTPUT_BEGIN DISC_ID={disc_id} ({mode})") + "\n")
+    handle.flush()
+    return path, handle
 
 
 def resolve_agent() -> Path:
@@ -131,6 +147,12 @@ def run_map_agent(
         raise FileNotFoundError(f"workflow doc not found: {WORKFLOW}")
 
     ready_yaml = READY_DIR / f"{disc_id}.yaml"
+    if ready_yaml.is_file():
+        append_map_log(f"SKIP: ready manifest already exists: {ready_yaml}")
+        if logger:
+            logger.info("Ready manifest already exists for %s; skipping map agent", disc_id)
+        return 0
+
     READY_DIR.mkdir(parents=True, exist_ok=True)
     prompt = build_map_prompt(disc_id, scan_json, ready_yaml=ready_yaml)
     agent = resolve_agent()
@@ -153,17 +175,25 @@ def run_map_agent(
     ]
 
     if background:
-        append_map_log(f"AGENT_OUTPUT_BEGIN DISC_ID={disc_id} (background)")
+        log_path, log_handle = _open_agent_output_log(disc_id, background=True)
+        append_map_log(f"Agent output → {log_path}")
         if logger:
-            logger.info("Launching background map agent for %s", disc_id)
-        proc = subprocess.Popen(
-            cmd,
-            cwd=ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-            text=True,
-        )
+            logger.info(
+                "Launching background map agent for %s (output=%s)",
+                disc_id,
+                log_path,
+            )
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                cwd=ROOT,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                text=True,
+            )
+        finally:
+            log_handle.close()
         return proc
 
     append_map_log(f"AGENT_OUTPUT_BEGIN DISC_ID={disc_id}")

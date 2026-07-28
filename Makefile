@@ -1,5 +1,10 @@
 .PHONY: build install lint test run clean help watch-disc watch-rip watch-all watch-stop watch-restart watch-status trigger-map
 
+VIDEOSRIPPER_ROOT ?= /mnt/game1/VideosRipper
+# Keep Python/Java/mktemp off the 32G /tmp tmpfs (same as VIDEOSRIPPER_TMP / paths.TMP_ROOT).
+export TMPDIR := $(VIDEOSRIPPER_ROOT)/.tmp
+export VIDEOSRIPPER_TMP := $(TMPDIR)
+
 VENV := .venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
@@ -34,11 +39,12 @@ build: install
 lint:
 	$(VENV)/bin/ruff check videosripper/ tests/
 
-# --basetemp on the game drive avoids filling /tmp (tmpfs). pytest keeps the
+# basetemp defaults in pyproject.toml (.pytest-tmp on game drive). pytest keeps the
 # last 3 basetemp runs; test_post_rip_verify writes multi-GB fixtures, so always
 # wipe .pytest-tmp after the run while preserving pytest's exit code.
 test:
-	$(PYTHON) -m pytest tests/ -v --basetemp=.pytest-tmp; \
+	mkdir -p .tmp .pytest-tmp
+	$(PYTHON) -m pytest tests/ -v; \
 		rc=$$?; \
 		rm -rf .pytest-tmp; \
 		exit $$rc
