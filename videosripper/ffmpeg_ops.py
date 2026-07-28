@@ -166,7 +166,7 @@ def apply_stream_defaults_or_keep(
         return src
 
 
-def chapter_bounds(path: Path, chapter_index: int) -> tuple[float, float]:
+def _probe_chapter_lines(path: Path) -> list[str]:
     proc = subprocess.run(
         [
             "ffprobe",
@@ -182,17 +182,35 @@ def chapter_bounds(path: Path, chapter_index: int) -> tuple[float, float]:
         text=True,
         check=True,
     )
-    lines = [ln for ln in proc.stdout.strip().splitlines() if ln]
-    if chapter_index >= len(lines):
+    return [ln for ln in proc.stdout.strip().splitlines() if ln]
+
+
+def chapter_bounds(
+    path: Path,
+    chapter_index: int,
+    chapter_end: int | None = None,
+) -> tuple[float, float]:
+    """Return (start, end) seconds for one chapter or an inclusive chapter range."""
+    lines = _probe_chapter_lines(path)
+    end_index = chapter_index if chapter_end is None else chapter_end
+    if chapter_index < 0 or end_index < chapter_index or end_index >= len(lines):
         raise RuntimeError(
-            f"Chapter index {chapter_index} out of range ({len(lines)} chapters in {path.name})"
+            f"Chapter range {chapter_index}-{end_index} out of range "
+            f"({len(lines)} chapters in {path.name})"
         )
-    start_s, end_s = lines[chapter_index].split(",")
+    start_s = lines[chapter_index].split(",")[0]
+    end_s = lines[end_index].split(",")[1]
     return float(start_s), float(end_s)
 
 
-def extract_chapter(src: Path, chapter_index: int, dest: Path, dry_run: bool = False) -> None:
-    start, end = chapter_bounds(src, chapter_index)
+def extract_chapter(
+    src: Path,
+    chapter_index: int,
+    dest: Path,
+    dry_run: bool = False,
+    chapter_end: int | None = None,
+) -> None:
+    start, end = chapter_bounds(src, chapter_index, chapter_end=chapter_end)
     cmd = [
         "ffmpeg",
         "-y",

@@ -417,6 +417,8 @@ def rip_tv_disc(
         work_tracks = [t for t in manifest.tracks if t.slot >= start]
         total_tracks = len(work_tracks)
         completed = 0
+        # Shared play-all MKVs for extract_chapter slots (subdir survives rip_title wipe).
+        playall_cache: dict[int, Path] = {}
         for track in work_tracks:
             outputs = track_outputs(manifest, track)
             from videosripper.logging_setup import PROCESS_RIP, log_progress
@@ -521,17 +523,24 @@ def rip_tv_disc(
                 assert track.episode and track.title
                 final = outputs[0][2]
                 season = track_season(manifest, track)
+                ch = track.extract_chapter
+                ch_label = (
+                    str(ch.chapter_index)
+                    if ch.chapter_end is None
+                    else f"{ch.chapter_index}-{ch.chapter_end}"
+                )
                 logger.info(
-                    "=== Ripping play-all title %s -> %sx%s %s (chapter extract) ===",
+                    "=== Ripping play-all title %s -> %sx%s %s (chapter extract %s) ===",
                     track.makemkv_title,
                     season,
                     track.episode,
                     track.title,
+                    ch_label,
                 )
                 if dry_run:
                     logger.info(
                         "  [dry-run] would extract ch %s -> %s",
-                        track.extract_chapter.chapter_index,
+                        ch_label,
                         final.name,
                     )
                     completed += 1
@@ -539,18 +548,39 @@ def rip_tv_disc(
                 resume_skip = frozenset(p for _, _, p in outputs if p.exists())
 
                 def _rip_chapter_slot() -> None:
-                    ripped = _rip_title_with_retry(
-                        manifest, track.makemkv_title, staging, monitor, retry_cfg
-                    )
-                    ripped = _postprocess_ripped(ripped, staging, manifest)
+                    cached = playall_cache.get(track.makemkv_title)
+                    if cached is not None and cached.is_file():
+                        ripped = cached
+                        logger.info(
+                            "  reusing cached play-all title %s (%s)",
+                            track.makemkv_title,
+                            ripped.name,
+                        )
+                    else:
+                        ripped = _rip_title_with_retry(
+                            manifest, track.makemkv_title, staging, monitor, retry_cfg
+                        )
+                        ripped = _postprocess_ripped(ripped, staging, manifest)
+                        cache_dir = staging / ".playall"
+                        cache_dir.mkdir(parents=True, exist_ok=True)
+                        cached_path = cache_dir / f"title_{track.makemkv_title}.mkv"
+                        if ripped.resolve() != cached_path.resolve():
+                            if cached_path.exists():
+                                cached_path.unlink()
+                            shutil.move(str(ripped), str(cached_path))
+                        playall_cache[track.makemkv_title] = cached_path
+                        ripped = cached_path
                     start, end = ffmpeg_ops.chapter_bounds(
-                        ripped, track.extract_chapter.chapter_index
+                        ripped,
+                        track.extract_chapter.chapter_index,
+                        chapter_end=track.extract_chapter.chapter_end,
                     )
                     chapter_dur = int(end - start)
                     ffmpeg_ops.extract_chapter(
                         ripped,
                         track.extract_chapter.chapter_index,
                         final,
+                        chapter_end=track.extract_chapter.chapter_end,
                     )
                     dur = ffmpeg_ops.probe_duration(final)
                     stats.episodes_written.append(f"{season}x{track.episode}")

@@ -753,6 +753,20 @@ skips:
       chapter_index: 14           # 0-based ffprobe chapter index
 ```
 
+**Extract chapter range** — multi-chapter episode from play-all (anime DVD with only a combined title; MakeMKV segment map `1-5,6-11,…`):
+
+```yaml
+  - slot: 1
+    makemkv_title: 0              # play-all (~2h); do not list in skips[]
+    episode: "01"
+    title: Hidden Inventory
+    extract_chapter:
+      chapter_index: 0            # 0-based start (MakeMKV chapter 1)
+      chapter_end: 4              # inclusive end (MakeMKV chapter 5)
+```
+
+Runner rips the play-all once and reuses it for later slots that share the same `makemkv_title`.
+
 ### stream_defaults (language defaults)
 
 Keep all audio and subtitle tracks in the MKV but set Plex/player defaults:
@@ -1042,6 +1056,7 @@ Design notes:
 | `VIDEOSRIPPER_OUTPUT` | `$ROOT/output` | Final MKV output |
 | `VIDEOSRIPPER_STAGING` | `$ROOT/staging` | Temp rip dirs |
 | `VIDEOSRIPPER_TMP` | `$ROOT/.tmp` | Ephemeral work (identify mounts); keep off `/tmp` tmpfs |
+| `TMPDIR` | `$ROOT/.tmp` | Process/mktemp/Java temp (MakeMKV, ffmpeg, pytest basetemp sibling) |
 | `VIDEOSRIPPER_LOGS` | `$ROOT/logs` | Log files |
 | `VIDEOSRIPPER_NAS` | `/mnt/tn-sas/Anime/Spongebob Squarepants` | SpongeBob NAS base (Anime share) |
 | `VIDEOSRIPPER_SHOWS_NAS` | `/mnt/tn-sas/Shows` | Live-action TV Shows share root |

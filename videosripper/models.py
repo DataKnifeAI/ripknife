@@ -41,7 +41,23 @@ class SplitConfig(BaseModel):
 
 
 class ExtractChapterConfig(BaseModel):
-    chapter_index: int = Field(ge=0, description="0-based ffprobe chapter index")
+    chapter_index: int = Field(
+        ge=0, description="0-based ffprobe chapter start index (inclusive)"
+    )
+    chapter_end: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "0-based ffprobe chapter end index (inclusive). "
+            "Omit for a single chapter; set for multi-chapter episodes from play-all."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def chapter_end_ge_start(self) -> ExtractChapterConfig:
+        if self.chapter_end is not None and self.chapter_end < self.chapter_index:
+            raise ValueError("extract_chapter.chapter_end must be >= chapter_index")
+        return self
 
 
 class TvTrack(BaseModel):
