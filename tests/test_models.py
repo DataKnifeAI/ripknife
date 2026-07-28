@@ -9,12 +9,15 @@ from pydantic import ValidationError
 
 from videosripper import paths
 from videosripper.models import (
+    MIN_SIZE_FLOOR_BYTES,
     MovieManifest,
     RetryConfig,
     SplitConfig,
     StreamDefaultsConfig,
+    TitleSelection,
     TvDiscManifest,
     TvTrack,
+    ValidationRules,
     load_manifest,
     movie_output_path,
     tv_nas_season_dir,
@@ -147,6 +150,20 @@ def test_tv_output_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(paths, "OUTPUT_ROOT", tmp_path / "output")
     manifest = TvDiscManifest.model_validate(_minimal_tv_manifest())
     assert tv_output_dir(manifest) == tmp_path / "output" / "Season 1"
+
+
+def test_movie_default_min_size_is_one_gib() -> None:
+    manifest = MovieManifest.model_validate(
+        {
+            "kind": "movie",
+            "meta": {"id": "test-movie", "title": "Test Movie"},
+            "output": {"dir": "Movies", "filename": "Test.mkv"},
+        }
+    )
+    assert manifest.validation.min_size_bytes == MIN_SIZE_FLOOR_BYTES
+    assert manifest.title_selection.min_size_bytes == MIN_SIZE_FLOOR_BYTES
+    assert TitleSelection().min_size_bytes == MIN_SIZE_FLOOR_BYTES
+    assert ValidationRules().min_size_bytes == MIN_SIZE_FLOOR_BYTES
 
 
 def test_movie_output_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

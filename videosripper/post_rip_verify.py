@@ -15,6 +15,7 @@ logger = logging.getLogger("videosripper")
 _DURATION_PCT = 0.05
 _DURATION_MIN_SEC = 30
 _SIZE_PCT = 0.10
+_MIN_SIZE_SCAN_FRACTION = 0.90
 
 
 class PostRipVerifyError(RuntimeError):
@@ -39,6 +40,21 @@ def duration_tolerance_sec(expected: int) -> int:
 def size_tolerance_bytes(expected: int) -> int:
     """±10% of expected scan size."""
     return int(expected * _SIZE_PCT)
+
+
+def effective_min_size_bytes(
+    min_size_bytes: int,
+    scan_size_bytes: int | None = None,
+) -> int:
+    """Cap manifest size floor to scan reality when scan size is known.
+
+    Prevents false failures when a manifest sets a rigid 5 GiB floor but the
+    disc scan (and valid rip) are slightly smaller — e.g. ~5.0 GB DVD features.
+    """
+    if scan_size_bytes and scan_size_bytes > 0:
+        scan_floor = int(scan_size_bytes * _MIN_SIZE_SCAN_FRACTION)
+        return min(min_size_bytes, scan_floor)
+    return min_size_bytes
 
 
 def _split_expected_duration(

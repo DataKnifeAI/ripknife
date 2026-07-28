@@ -189,16 +189,20 @@ class StreamDefaultsConfig(BaseModel):
         return self
 
 
+# Absolute floor for movie size validation — catches empty/truncated rips, not real features.
+MIN_SIZE_FLOOR_BYTES = 1024 * 1024 * 1024  # 1 GiB
+
+
 class TitleSelection(BaseModel):
     mode: Literal["auto_feature", "fixed"] = "auto_feature"
     title: int | None = None
     min_duration_sec: int = Field(default=80 * 60, ge=0)
-    min_size_bytes: int = Field(default=5 * 1024 * 1024 * 1024, ge=0)
+    min_size_bytes: int = Field(default=MIN_SIZE_FLOOR_BYTES, ge=0)
 
 
 class ValidationRules(BaseModel):
     min_duration_sec: int = Field(default=80 * 60, ge=0)
-    min_size_bytes: int = Field(default=5 * 1024 * 1024 * 1024, ge=0)
+    min_size_bytes: int = Field(default=MIN_SIZE_FLOOR_BYTES, ge=0)
 
 
 class StitchConfig(BaseModel):

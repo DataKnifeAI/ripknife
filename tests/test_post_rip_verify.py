@@ -6,10 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from videosripper.makemkv import ScanResult, TitleInfo
-from videosripper.models import SplitConfig, SplitOutput, TvTrack
+from videosripper.models import MIN_SIZE_FLOOR_BYTES, SplitConfig, SplitOutput, TvTrack
 from videosripper.post_rip_verify import (
     PostRipVerifyError,
     duration_tolerance_sec,
+    effective_min_size_bytes,
     size_tolerance_bytes,
     verify_output,
     verify_track_outputs,
@@ -36,6 +37,35 @@ def test_duration_tolerance_uses_larger_of_pct_or_30s() -> None:
 
 def test_size_tolerance_is_10_percent() -> None:
     assert size_tolerance_bytes(1_000_000_000) == 100_000_000
+
+
+def test_effective_min_size_caps_to_scan_fraction() -> None:
+    scan_size = 5_484_017_664  # Me, Myself & Irene feature
+    assert effective_min_size_bytes(5_368_709_120, scan_size) == int(scan_size * 0.90)
+    assert effective_min_size_bytes(MIN_SIZE_FLOOR_BYTES, scan_size) == MIN_SIZE_FLOOR_BYTES
+
+
+def test_effective_min_size_without_scan() -> None:
+    assert effective_min_size_bytes(5_368_709_120, None) == 5_368_709_120
+    assert effective_min_size_bytes(5_368_709_120, 0) == 5_368_709_120
+
+
+@patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=6961)
+def test_verify_output_irene_sized_rip_passes_with_scan_cap(mock_probe, tmp_path: Path) -> None:
+    """Rip slightly under 5 GiB but within scan tolerance should pass when floor is capped."""
+    scan_size = 5_484_017_664
+    rip_size = 5_367_352_991  # actual Irene failure size from logs
+    path = tmp_path / "movie.mkv"
+    path.write_bytes(b"x" * rip_size)
+    eff_min = effective_min_size_bytes(5_368_709_120, scan_size)
+    result = verify_output(
+        _title(duration_sec=6961, size_bytes=scan_size),
+        path,
+        min_duration_sec=4800,
+        min_size_bytes=eff_min,
+    )
+    assert rip_size >= eff_min
+    assert result.ok
 
 
 @patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=690)

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from videosripper.makemkv import ScanResult, TitleInfo
 from videosripper.models import MovieManifest, TvDiscManifest, TvTrack, ValidationRules
+from videosripper.post_rip_verify import effective_min_size_bytes
 
 SUSPICIOUS_NAME_RE = re.compile(
     r"\b("
@@ -412,11 +413,12 @@ def _movie_min_size_issue(
     title_idx: int,
     rules: ValidationRules,
 ) -> TitleIssue | None:
-    if info.size_bytes and info.size_bytes < rules.min_size_bytes:
+    required = effective_min_size_bytes(rules.min_size_bytes, info.size_bytes)
+    if info.size_bytes and info.size_bytes < required:
         return TitleIssue(
             "error",
             f"movie title {title_idx} size {info.size_bytes} bytes "
-            f"< required {rules.min_size_bytes}",
+            f"< required {required}",
         )
     return None
 

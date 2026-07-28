@@ -101,6 +101,11 @@ Manifest requirements:
   - Foreign-language film: audio_default = original language; add subtitle_default eng when English subs should default on
   - Do NOT omit stream_defaults on movies — discs often mark non-English audio as default
 - Match existing manifest style (stream_defaults, nas, post blocks)
+- **Size floors (`title_selection.min_size_bytes`, `validation.min_size_bytes`):**
+  - Defaults are 1 GiB — enough to catch empty rips, not reject real DVDs (~2–5 GB).
+  - Do NOT copy 5368709120 (5 GiB) unless the scan feature is genuinely large (BD/UHD).
+  - Prefer omitting min_size_bytes (use defaults) or set ~90% of scan `size_bytes` for the feature title.
+  - DVDs and SD features are often 2–4 GB; many successful rips in this library are under 5 GB.
 - **Multi-disc movies** (DSC1/DSC2, feature split across discs, user hint):
   - One manifest per disc; ``meta.part: N`` (1-based); ``output.filename: Title (Year) - Disc N.mkv``
   - ``post.copy_to_nas: false`` on every part (masters stay on game drive)

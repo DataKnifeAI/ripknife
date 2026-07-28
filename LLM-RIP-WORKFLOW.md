@@ -486,6 +486,7 @@ When `obfuscation.detected` is true (or `title_count` > 50 with many identical n
 - If disc_name is generic (heuristic: uninformative volume label), **identify the movie/show first** using `identification` hints (bdmt title, runtime candidates), then box art / web search before writing YAML. Do not invent placeholder titles for NAS.
 - Set `meta.minlength` to match the scan (default 300).
 - For movies: `title_selection.mode: auto_feature` unless a specific index is proven; include `validation` floors.
+  - **Size floors:** default 1 GiB (`1073741824`) catches empty rips. Do **not** blanket-set 5368709120 (5 GiB) — many DVDs rip at 2–4 GB. Omit `min_size_bytes` or set ~90% of scan feature `size_bytes`. Reserve 5+ GiB floors for large BD/UHD features only.
 - For TV: map `tracks[].makemkv_title` to TINFO indices from the scan; `skips[]` for play-all, extras, decoys, and skipped angles.
 
 **7. Validate before ready**
@@ -820,10 +821,10 @@ stream_defaults:
 title_selection:
   mode: auto_feature              # pick longest feature title
   min_duration_sec: 4800
-  min_size_bytes: 5368709120
+  # omit min_size_bytes → 1 GiB default; or ~90% of scan feature size_bytes
 validation:
   min_duration_sec: 4800
-  min_size_bytes: 5368709120
+  # omit min_size_bytes → 1 GiB default
 ```
 
 Existing manifests: `configs/spongebob/s8-disc{1,2,3}.yaml`, `configs/movies/ghost-rider-spirit-of-vengeance.yaml`, `configs/movies/scarface-1983.yaml`.

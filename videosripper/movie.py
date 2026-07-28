@@ -23,6 +23,7 @@ from videosripper.monitor import MonitorSettings, preflight_disc_open, warn_dupl
 from videosripper.nas import copy_movie_to_share, eject_disc
 from videosripper.paths import MOVIES_NAS, STAGING_ROOT, disc_dev, resolve_path
 from videosripper.post_rip_verify import (
+    effective_min_size_bytes,
     log_verify_failure,
     verify_output,
     warn_title_count_explosion,
@@ -236,8 +237,12 @@ def rip_movie(
         logger.info("Sample-verify PASS title %s", title)
 
     rules = manifest.validation
+    min_size = effective_min_size_bytes(
+        rules.min_size_bytes,
+        info.size_bytes if info else None,
+    )
     if out_path.is_file():
-        if out_path.stat().st_size >= rules.min_size_bytes:
+        if out_path.stat().st_size >= min_size:
             logger.info("Output already exists and looks valid — skipping rip.")
             # Still close steps 5/7 and 6/7 so DONE never follows a gap in numbering.
             log_copy_skipped("local output already complete")
@@ -267,7 +272,7 @@ def rip_movie(
             ripped,
             info,
             min_duration_sec=rules.min_duration_sec,
-            min_size_bytes=rules.min_size_bytes,
+            min_size_bytes=min_size,
         ):
             ripped.unlink(missing_ok=True)
             raise RuntimeError("Rip validation failed")

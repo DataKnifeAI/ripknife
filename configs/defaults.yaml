@@ -111,7 +111,7 @@ retry:
 # title_selection:
 #   mode: auto_feature
 #   min_duration_sec: 4800
-#   min_size_bytes: 5368709120
+#   # min_size_bytes: 1073741824   # 1 GiB default — omit unless disc-specific
 # validation:
 #   min_duration_sec: 4800
-#   min_size_bytes: 5368709120
+#   # min_size_bytes: 1073741824
