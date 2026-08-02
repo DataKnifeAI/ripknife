@@ -150,6 +150,8 @@ All rip workflow steps are **Python functions** in `videosripper/pipeline.py`. S
 
 **Process 1** (`disc-watcher.py`): `handle_disc_insert()` → scan (serial) → registry hit OR background map.
 
+On re-insert, if a matching manifest sits in `staging/failed/` (including `*.yaml.claimed-<drive>` from an exhausted rip), the insert pipeline **auto-recovers** it to `staging/ready/` with a `*.resume.json` sidecar (`resume_from_slot`, `reinsert_count`). Existing episode MKVs are detected so the rip resumes at the first missing slot (skip-if-exists still applies). Auto-recovery is capped at `VIDEOSRIPPER_REINSERT_MAX` (default **5**) re-inserts per manifest; beyond that, `RESUME_CAP` is logged and manual intervention is required. Device-bound rip workers also call recovery before claiming a ready manifest.
+
 **Process 2** (`rip-watcher.py`): `process_ready_manifest()` → validate (local) → rescan + verify + rip (serial under makemkv lock).
 
 ### Multiple drives / parallel rips
@@ -2054,6 +2056,7 @@ Resume: `scripts/videosripper rip configs/movies/scarface-1983.yaml`
 | `mv: No such file or directory` | Ensure `output/Season N/` exists (`mkdir -p`) before rip |
 | NAS copy permission denied | Fix permissions on NAS season folder |
 | Rip killed (exit 143) | Intentional stop; resume with `VIDEOSRIPPER_START_AT` or `--start-at` |
+| Partial disc rip in `staging/failed/` | Re-insert the same disc — watchers match by `meta.disc_name` / registry / manifest id, move failed → ready, set `resume_from_slot` from existing MKVs. Or manually: `scripts/videosripper rip configs/…yaml --start-at N`. Cap: `VIDEOSRIPPER_REINSERT_MAX` (default 5) auto re-inserts |
 | Wrong episode names | Re-scan disc; fix manifest `tracks[]`; do not guess from prior disc |
 | Home disk full | Ensure output/staging stay on `/mnt/game1` (1.5 TB free) |
 | Plex wrong episode metadata | Use DVD-order `Nx##` filenames + set Plex episode ordering to **DVD** |

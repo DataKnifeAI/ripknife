@@ -37,7 +37,7 @@ from videosripper.monitor import MakeMkvError
 from videosripper.movie import rip_movie
 from videosripper.paths import STAGING_ROOT
 from videosripper.registry import load_registry, manifest_matches_scan
-from videosripper.runner import rip_tv_disc
+from videosripper.runner import rip_tv_disc, track_outputs
 from videosripper.title_verify import format_title_issues, validate_manifest_titles
 from videosripper.watcher_util import (
     disc_media_generation,
@@ -52,7 +52,258 @@ READY_DIR = STAGING_ROOT / "ready"
 DONE_DIR = STAGING_ROOT / "done"
 FAILED_DIR = STAGING_ROOT / "failed"
 
+REINSERT_MAX = int(os.environ.get("VIDEOSRIPPER_REINSERT_MAX", "5"))
+
 T = TypeVar("T")
+
+
+@dataclass
+class ResumeInfo:
+    resume_from_slot: int
+    reinsert_count: int = 0
+    last_reason: str = ""
+
+
+def manifest_base_id(yaml_path: Path) -> str:
+    """Manifest id from a ready/failed path (handles ``*.yaml.claimed-sr0``)."""
+    name = yaml_path.name
+    if ".yaml.claimed-" in name:
+        return name.split(".yaml.claimed-")[0]
+    if name.endswith(".yaml"):
+        return name[: -len(".yaml")]
+    return yaml_path.stem
+
+
+def resume_sidecar_path(manifest_id: str, directory: Path) -> Path:
+    return directory / f"{manifest_id}.resume.json"
+
+
+def _load_resume_info(manifest_id: str, directory: Path) -> ResumeInfo | None:
+    path = resume_sidecar_path(manifest_id, directory)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return ResumeInfo(
+        resume_from_slot=int(data.get("resume_from_slot", 1)),
+        reinsert_count=int(data.get("reinsert_count", 0)),
+        last_reason=str(data.get("last_reason", "")),
+    )
+
+
+def _save_resume_info(manifest_id: str, directory: Path, info: ResumeInfo) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    resume_sidecar_path(manifest_id, directory).write_text(
+        json.dumps(
+            {
+                "resume_from_slot": info.resume_from_slot,
+                "reinsert_count": info.reinsert_count,
+                "last_reason": info.last_reason,
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _read_failure_reason(failed_path: Path, manifest_id: str) -> str:
+    for name in (f"{manifest_id}.reason.txt", f"{failed_path.stem}.reason.txt"):
+        reason_path = FAILED_DIR / name
+        if reason_path.is_file():
+            return reason_path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+def _manifest_companion_paths(yaml_path: Path, directory: Path) -> list[Path]:
+    """Sidecars keyed by manifest id (and legacy stem-based reason files)."""
+    base = manifest_base_id(yaml_path)
+    found: list[Path] = []
+    for name in (f"{base}.resume.json", f"{base}.reason.txt", f"{yaml_path.stem}.reason.txt"):
+        path = directory / name
+        if path.is_file() and path not in found:
+            found.append(path)
+    return found
+
+
+def compute_resume_from_slot(manifest: TvDiscManifest | MovieManifest) -> int:
+    """First track slot with missing output files (1 if all complete)."""
+    if isinstance(manifest, MovieManifest):
+        return 1
+    for track in manifest.tracks:
+        outputs = track_outputs(manifest, track)
+        if not all(path.exists() for _, _, path in outputs):
+            return track.slot
+    return 1
+
+
+def tv_disc_outputs_complete(manifest: TvDiscManifest) -> bool:
+    return all(
+        all(path.exists() for _, _, path in track_outputs(manifest, track))
+        for track in manifest.tracks
+    )
+
+
+def list_failed_manifests() -> list[Path]:
+    if not FAILED_DIR.is_dir():
+        return []
+    paths: list[Path] = []
+    for path in sorted(FAILED_DIR.iterdir()):
+        if not path.is_file():
+            continue
+        if path.name.endswith(".reason.txt") or path.name.endswith(".resume.json"):
+            continue
+        if ".yaml" in path.name:
+            paths.append(path)
+    return paths
+
+
+def match_failed_manifest_for_scan(
+    scan_data: dict[str, Any],
+    *,
+    disc_id: str | None = None,
+    logger: logging.Logger | None = None,
+) -> tuple[Path, TvDiscManifest | MovieManifest] | None:
+    """Find a failed manifest matching the scanned disc."""
+    disc_name = scan_data.get("disc_name", "")
+    scan_slug = slugify_disc_id(disc_name) if disc_name else ""
+    matches: list[tuple[int, Path, TvDiscManifest | MovieManifest]] = []
+
+    for path in list_failed_manifests():
+        try:
+            manifest = load_manifest(path)
+        except (ValidationError, OSError, ValueError) as exc:
+            if logger:
+                logger.debug("Skipping unreadable failed manifest %s: %s", path.name, exc)
+            continue
+
+        matched = step_verify_disc_match(path, manifest, scan_data).ok
+        score = 0
+        if matched:
+            score = 10
+        elif disc_id and manifest.meta.id == disc_id:
+            score = 8
+        elif scan_slug and manifest.meta.id == scan_slug:
+            score = 6
+        elif disc_id and manifest_base_id(path) == disc_id:
+            score = 4
+        else:
+            continue
+
+        matches.append((score, path, manifest))
+
+    if not matches:
+        return None
+
+    matches.sort(key=lambda item: (-item[0], item[1].name))
+    best_score = matches[0][0]
+    top = [item for item in matches if item[0] == best_score]
+    if len(top) > 1 and logger:
+        logger.warning(
+            "Multiple failed manifests match disc %r; using %s",
+            disc_name,
+            top[0][1].name,
+        )
+    _, path, manifest = top[0]
+    return path, manifest
+
+
+def recover_failed_manifest_for_scan(
+    scan_data: dict[str, Any],
+    logger: logging.Logger,
+    *,
+    disc_id: str | None = None,
+) -> Path | None:
+    """Promote a matching failed manifest to staging/ready for resume on re-insert."""
+    matched = match_failed_manifest_for_scan(scan_data, disc_id=disc_id, logger=logger)
+    if matched is None:
+        return None
+
+    failed_path, manifest = matched
+    manifest_id = manifest.meta.id
+    ready_path = READY_DIR / f"{manifest_id}.yaml"
+    if ready_path.is_file():
+        logger.info("Ready manifest already queued for resume: %s", manifest_id)
+        return ready_path
+
+    if isinstance(manifest, MovieManifest) and already_ripped(manifest):
+        dest = move_manifest_yaml(failed_path, DONE_DIR, reason="outputs complete on re-insert")
+        log_stage(
+            "FAILED_RECOVERED",
+            process=PROCESS_INSERT,
+            detail=f"{manifest_id} outputs complete -> {dest.name}",
+        )
+        return dest
+
+    if isinstance(manifest, TvDiscManifest) and tv_disc_outputs_complete(manifest):
+        dest = move_manifest_yaml(failed_path, DONE_DIR, reason="outputs complete on re-insert")
+        log_stage(
+            "FAILED_RECOVERED",
+            process=PROCESS_INSERT,
+            detail=f"{manifest_id} all episodes exist -> {dest.name}",
+        )
+        return dest
+
+    info = _load_resume_info(manifest_id, FAILED_DIR) or ResumeInfo(resume_from_slot=1)
+    info.reinsert_count += 1
+    info.last_reason = _read_failure_reason(failed_path, manifest_id)
+    if info.reinsert_count > REINSERT_MAX:
+        log_stage(
+            "RESUME_CAP",
+            process=PROCESS_INSERT,
+            detail=(
+                f"{manifest_id} re-insert limit ({REINSERT_MAX}) exceeded; "
+                "manual intervention required"
+            ),
+        )
+        logger.error(
+            "Re-insert resume cap reached for %s (%d/%d); not auto-queuing",
+            manifest_id,
+            info.reinsert_count,
+            REINSERT_MAX,
+        )
+        return None
+
+    info.resume_from_slot = compute_resume_from_slot(manifest)
+    READY_DIR.mkdir(parents=True, exist_ok=True)
+    companions = _manifest_companion_paths(failed_path, FAILED_DIR)
+    shutil.move(str(failed_path), str(ready_path))
+    for companion in companions:
+        dest_name = companion.name
+        if companion.name.endswith(".reason.txt"):
+            dest_name = f"{manifest_id}.reason.txt"
+        dest = READY_DIR / dest_name
+        if dest.is_file():
+            companion.unlink(missing_ok=True)
+        else:
+            companion.rename(dest)
+    _save_resume_info(manifest_id, READY_DIR, info)
+    log_stage(
+        "FAILED_RECOVERED",
+        process=PROCESS_INSERT,
+        detail=(
+            f"{manifest_id} failed -> ready slot>={info.resume_from_slot} "
+            f"reinsert={info.reinsert_count}/{REINSERT_MAX}"
+        ),
+    )
+    logger.info(
+        "Recovered failed manifest %s -> %s (resume slot %s, reinsert %s/%s)",
+        failed_path.name,
+        ready_path.name,
+        info.resume_from_slot,
+        info.reinsert_count,
+        REINSERT_MAX,
+    )
+    return ready_path
+
+
+def rip_start_at_for_manifest(yaml_path: Path, manifest: TvDiscManifest | MovieManifest) -> int | None:
+    info = _load_resume_info(manifest.meta.id, yaml_path.parent)
+    if info is None:
+        return None
+    return info.resume_from_slot if info.resume_from_slot > 1 else None
 
 
 class StepKind(Enum):
@@ -428,10 +679,21 @@ def step_rip_manifest(
 
 def move_manifest_yaml(yaml_path: Path, dest_dir: Path, *, reason: str = "") -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / yaml_path.name
+    manifest_id = manifest_base_id(yaml_path)
+    dest_name = f"{manifest_id}.yaml"
+    dest = dest_dir / dest_name
     shutil.move(str(yaml_path), str(dest))
+    source_dir = yaml_path.parent
+    for companion in _manifest_companion_paths(yaml_path, source_dir):
+        companion_dest = dest_dir / companion.name
+        if companion.name.endswith(".reason.txt"):
+            companion_dest = dest_dir / f"{manifest_id}.reason.txt"
+        if companion_dest.is_file():
+            companion.unlink(missing_ok=True)
+        else:
+            companion.rename(companion_dest)
     if reason:
-        (dest_dir / f"{yaml_path.stem}.reason.txt").write_text(reason + "\n", encoding="utf-8")
+        (dest_dir / f"{manifest_id}.reason.txt").write_text(reason + "\n", encoding="utf-8")
     return dest
 
 
@@ -512,6 +774,24 @@ def handle_disc_insert(
         total=INSERT_STEPS,
         detail=f"disc={pending.disc_name} id={pending.disc_id} -> {pending.scan_json.name}",
     )
+
+    recovered = recover_failed_manifest_for_scan(
+        scan_data,
+        logger,
+        disc_id=pending.disc_id,
+    )
+    if recovered is not None and recovered.parent == READY_DIR:
+        return StepResult(
+            name="disc_insert",
+            ok=True,
+            message="failed_recovered",
+            data={
+                "disc_id": pending.disc_id,
+                "disc_name": pending.disc_name,
+                "ready_yaml": str(recovered),
+            },
+        )
+
     ready_yaml = READY_DIR / f"{pending.disc_id}.yaml"
     if ready_yaml.is_file():
         logger.info("Ready manifest already exists for %s", pending.disc_id)
@@ -662,8 +942,10 @@ def _verify_and_rip(
         total=RIP_STEPS,
         detail=f"{label} ({track_total} track(s)) dev={manifest.meta.device}",
     )
-    rip = step_rip_manifest(manifest, yaml_path)
+    start_at = rip_start_at_for_manifest(yaml_path, manifest)
+    rip = step_rip_manifest(manifest, yaml_path, start_at=start_at)
     if rip.ok:
+        resume_sidecar_path(manifest.meta.id, yaml_path.parent).unlink(missing_ok=True)
         move_manifest_yaml(yaml_path, DONE_DIR)
         logger.info("Rip succeeded: %s", yaml_path.name)
         log_stage(
@@ -794,6 +1076,8 @@ def run_device_worker_once(device: str, logger: logging.Logger) -> StepResult:
 
         if not scan_data.get("titles"):
             return StepResult(name="device_worker", ok=True, message="no titles")
+
+        recover_failed_manifest_for_scan(scan_data, logger)
 
         matched = _match_ready_manifest_for_scan(scan_data, logger)
         if matched is None:
