@@ -7,8 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from videosripper import map_agent
-from videosripper import paths
+from videosripper import map_agent, paths
 
 
 def _patch_map_paths(

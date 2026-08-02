@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import signal
-from unittest.mock import MagicMock
 
 import pytest
 

@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from videosripper.ffmpeg_ops import _pick_default_stream, apply_stream_defaults_or_keep
-from videosripper.movie import _postprocess_ripped
 from videosripper.models import MovieManifest
+from videosripper.movie import _postprocess_ripped
 
 
 def test_pick_default_stream_prefers_first_lang_match() -> None:

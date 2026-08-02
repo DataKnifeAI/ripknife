@@ -30,6 +30,12 @@ def _title(**kwargs) -> TitleInfo:
     return TitleInfo(**defaults)
 
 
+def _sized_file(path: Path, size: int) -> None:
+    """Create a sparse file of the given byte size (avoids multi-GB write_bytes)."""
+    with path.open("wb") as f:
+        f.truncate(size)
+
+
 def test_duration_tolerance_uses_larger_of_pct_or_30s() -> None:
     assert duration_tolerance_sec(600) == 30
     assert duration_tolerance_sec(1000) == 50
@@ -56,7 +62,7 @@ def test_verify_output_irene_sized_rip_passes_with_scan_cap(mock_probe, tmp_path
     scan_size = 5_484_017_664
     rip_size = 5_367_352_991  # actual Irene failure size from logs
     path = tmp_path / "movie.mkv"
-    path.write_bytes(b"x" * rip_size)
+    _sized_file(path, rip_size)
     eff_min = effective_min_size_bytes(5_368_709_120, scan_size)
     result = verify_output(
         _title(duration_sec=6961, size_bytes=scan_size),
@@ -71,7 +77,7 @@ def test_verify_output_irene_sized_rip_passes_with_scan_cap(mock_probe, tmp_path
 @patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=690)
 def test_verify_output_passes_within_duration_tolerance(mock_probe, tmp_path: Path) -> None:
     path = tmp_path / "ep.mkv"
-    path.write_bytes(b"x" * 700_000_000)
+    _sized_file(path, 700_000_000)
     result = verify_output(_title(), path)
     assert result.ok
     mock_probe.assert_called_once_with(path)
@@ -80,7 +86,7 @@ def test_verify_output_passes_within_duration_tolerance(mock_probe, tmp_path: Pa
 @patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=600)
 def test_verify_output_fails_duration_mismatch(mock_probe, tmp_path: Path) -> None:
     path = tmp_path / "ep.mkv"
-    path.write_bytes(b"x" * 700_000_000)
+    _sized_file(path, 700_000_000)
     result = verify_output(_title(duration_sec=690), path)
     assert not result.ok
     assert any("likely wrong title" in err for err in result.errors)
@@ -89,7 +95,7 @@ def test_verify_output_fails_duration_mismatch(mock_probe, tmp_path: Path) -> No
 @patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=655)
 def test_verify_output_split_first_segment(mock_probe, tmp_path: Path) -> None:
     path = tmp_path / "part_a.mkv"
-    path.write_bytes(b"x" * 700_000_000)
+    _sized_file(path, 700_000_000)
     split = SplitConfig(
         at_seconds=660.0,
         outputs=[
@@ -110,7 +116,7 @@ def test_verify_output_split_first_segment(mock_probe, tmp_path: Path) -> None:
 @patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=620)
 def test_verify_output_split_second_segment_fails(mock_probe, tmp_path: Path) -> None:
     path = tmp_path / "part_b.mkv"
-    path.write_bytes(b"x" * 700_000_000)
+    _sized_file(path, 700_000_000)
     split = SplitConfig(
         at_seconds=660.0,
         outputs=[
@@ -131,7 +137,7 @@ def test_verify_output_split_second_segment_fails(mock_probe, tmp_path: Path) ->
 @patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=690)
 def test_verify_output_size_mismatch(mock_probe, tmp_path: Path) -> None:
     path = tmp_path / "ep.mkv"
-    path.write_bytes(b"x" * 500_000_000)
+    _sized_file(path, 500_000_000)
     result = verify_output(_title(), path)
     assert not result.ok
     assert any("size" in err for err in result.errors)
@@ -140,7 +146,7 @@ def test_verify_output_size_mismatch(mock_probe, tmp_path: Path) -> None:
 @patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=690)
 def test_verify_output_skips_size_when_scan_missing(mock_probe, tmp_path: Path) -> None:
     path = tmp_path / "ep.mkv"
-    path.write_bytes(b"x" * 1000)
+    _sized_file(path, 1000)
     result = verify_output(_title(size_bytes=0), path)
     assert result.ok
 
@@ -148,7 +154,7 @@ def test_verify_output_skips_size_when_scan_missing(mock_probe, tmp_path: Path) 
 @patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=5400)
 def test_verify_output_movie_minimum_floor(mock_probe, tmp_path: Path) -> None:
     path = tmp_path / "movie.mkv"
-    path.write_bytes(b"x" * 6_000_000_000)
+    _sized_file(path, 6_000_000_000)
     result = verify_output(
         _title(duration_sec=5400, size_bytes=6_000_000_000),
         path,
@@ -161,7 +167,7 @@ def test_verify_output_movie_minimum_floor(mock_probe, tmp_path: Path) -> None:
 @patch("videosripper.post_rip_verify.ffmpeg_ops.probe_duration", return_value=3000)
 def test_verify_output_movie_minimum_duration_fails(mock_probe, tmp_path: Path) -> None:
     path = tmp_path / "movie.mkv"
-    path.write_bytes(b"x" * 6_000_000_000)
+    _sized_file(path, 6_000_000_000)
     result = verify_output(
         _title(duration_sec=5400, size_bytes=6_000_000_000),
         path,

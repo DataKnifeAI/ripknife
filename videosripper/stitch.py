@@ -13,10 +13,10 @@ from shutil import which
 
 from videosripper import paths
 from videosripper.logging_setup import (
+    PROCESS_RIP,
     log_copy_result,
     log_copy_start,
     log_stage,
-    PROCESS_RIP,
 )
 from videosripper.models import (
     MovieManifest,
@@ -356,6 +356,6 @@ def maybe_stitch_after_part(
         )
         log_copy_result(nas_ok, out_path.name, dest)
     elif manifest.stitch.copy_to_nas:
-        _log_stitch("COPY", f"skipped stitched file (no nas.movies)")
+        _log_stitch("COPY", "skipped stitched file (no nas.movies)")
 
     return StitchResult(ok=True, output_path=out_path, nas_ok=nas_ok, message="stitched")

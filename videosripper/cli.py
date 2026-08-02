@@ -12,7 +12,6 @@ from pydantic import ValidationError
 from rich.console import Console
 from rich.table import Table
 
-from videosripper.paths import configure_process_tmp
 from videosripper.logging_setup import (
     log_exception,
     log_scan,
@@ -23,15 +22,16 @@ from videosripper.makemkv import scan, scan_to_json
 from videosripper.models import MovieManifest, TvDiscManifest, load_manifest
 from videosripper.monitor import MakeMkvError
 from videosripper.movie import rip_movie
+from videosripper.paths import configure_process_tmp
 from videosripper.post_rip_verify import warn_title_count_explosion
 from videosripper.runner import rip_tv_disc
+from videosripper.sample_verify import preview_title, scan_and_preview
 from videosripper.title_verify import (
     format_title_issues,
     scan_title_hints,
     titles_from_scan_result,
     validate_manifest_titles,
 )
-from videosripper.sample_verify import preview_title, scan_and_preview
 
 app = typer.Typer(no_args_is_help=True, help="Config-driven MakeMKV disc ripping")
 console = Console(stderr=True)

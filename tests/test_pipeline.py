@@ -318,6 +318,7 @@ def test_recover_failed_manifest_promotes_claimed_yaml_to_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import logging
+
     import yaml
 
     from videosripper import paths
@@ -363,6 +364,7 @@ def test_recover_failed_manifest_respects_reinsert_cap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import logging
+
     import yaml
 
     failed = tmp_path / "failed"
@@ -397,6 +399,7 @@ def test_handle_disc_insert_recovers_failed_before_map(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import logging
+
     import yaml
 
     from videosripper import paths

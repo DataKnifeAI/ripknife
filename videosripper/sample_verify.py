@@ -11,8 +11,8 @@ from pathlib import Path
 from videosripper import ffmpeg_ops
 from videosripper.logging_setup import log_debug
 from videosripper.makemkv import ScanResult, TitleInfo, rip_title, scan
-from videosripper.title_verify import titles_from_scan_json
 from videosripper.paths import STAGING_ROOT
+from videosripper.title_verify import titles_from_scan_json
 
 logger = logging.getLogger("videosripper")
 
