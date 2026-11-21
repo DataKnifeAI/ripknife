@@ -20,31 +20,13 @@ need python3
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-echo "Fetching the latest ${REPO} release"
-if ! curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" -o "${tmp}/release.json"; then
-  echo "No GitHub release found for ${REPO}" >&2
+name="ripknife.tar.gz"
+url="https://github.com/${REPO}/releases/latest/download/${name}"
+echo "Downloading the latest ${REPO} release"
+if ! curl -fsSL -L "${url}" -o "${tmp}/${name}"; then
+  echo "No release package at ${url}" >&2
   exit 1
 fi
-
-python3 - "${tmp}/release.json" "${tmp}/asset.txt" <<'PY'
-import json
-import sys
-
-data = json.load(open(sys.argv[1], encoding="utf-8"))
-for asset in data.get("assets") or []:
-    name = asset.get("name") or ""
-    if name.startswith("ripknife-") and name.endswith(".tar.gz"):
-        open(sys.argv[2], "w", encoding="utf-8").write(
-            asset["browser_download_url"] + "\n" + name + "\n"
-        )
-        raise SystemExit(0)
-raise SystemExit("Latest release has no ripknife-*.tar.gz package")
-PY
-
-url="$(sed -n '1p' "${tmp}/asset.txt")"
-name="$(sed -n '2p' "${tmp}/asset.txt")"
-echo "Downloading ${name}"
-curl -fsSL -L "${url}" -o "${tmp}/${name}"
 
 python3 - "${tmp}/${name}" "${tmp}/top.txt" <<'PY'
 import sys
