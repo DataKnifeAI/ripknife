@@ -55,7 +55,7 @@ def test_requests_use_openrouter_cheap_model_and_env_key() -> None:
     assert req.get_header("Authorization") == "Bearer test-openrouter-key"
     body = json.loads(req.data.decode("utf-8"))
     assert body["model"] == llm.DEFAULT_MODEL
-    assert body["model"] == "google/gemini-2.5-flash-lite"
+    assert body["model"] == "deepseek/deepseek-v4.1-flash"
     assert body["reasoning"] == {"effort": "none"}
     assert "test-openrouter-key" not in req.data.decode("utf-8")
 
@@ -71,7 +71,7 @@ def test_all_three_calls_use_the_same_model() -> None:
         captured: list[object] = []
         assert fn(text, env=env, opener=_opener(_chat(action), captured)) == action
         body = json.loads(captured[0].data.decode("utf-8"))
-        assert body["model"] == "google/gemini-2.5-flash-lite"
+        assert body["model"] == "deepseek/deepseek-v4.1-flash"
         enum = body["response_format"]["json_schema"]["schema"]["properties"]["action"]["enum"]
         assert action in enum
 

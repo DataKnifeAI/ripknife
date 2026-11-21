@@ -26,7 +26,7 @@ OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions"
 # a volume label is a placeholder. Not a reasoning model. Every call defaults
 # to this id. A per-call env var overrides it; RIPKNIFE_LLM_MODEL overrides
 # whichever calls do not set their own.
-DEFAULT_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 ENV_API_KEY = "OPENROUTER_API_KEY"
 ENV_MODEL = "RIPKNIFE_LLM_MODEL"
 ENV_MAP_MODEL = "RIPKNIFE_LLM_MAP_MODEL"
