@@ -22,7 +22,7 @@ Leave the drive alone. Do not start a second rip on it, run `recover`, or image 
 
 Do not `daemon-reload`, restart the user units, or run `make watch-restart` until the rip has finished. `daemon-reload` applies unit changes to the next start only.
 
-`make install-service` is the always-on path. Do not also run `make watch-all`. Stop the ad-hoc watchers before enabling the units.
+`make install-service` is the always-on path. `make dev` runs the watchers in this checkout instead. Do not run both. Stop the ad-hoc watchers before enabling the units.
 
 ## Config
 
@@ -91,7 +91,8 @@ make uninstall-service
 | `make lint` / `make test` | ruff / pytest |
 | `make run ARGS="..."` | CLI passthrough |
 | `make check-drive` | Optical drive and LibreDrive |
-| `make watch-all` | Detached disc and rip watchers. Logs in `logs/` |
+| `make dev` | Developer run: install if needed, then both watchers. Logs in `logs/` |
+| `make watch-all` | Same watchers as `make dev`, without the developer name |
 | `make watch-stop` / `make watch-restart` | Stop or restart ad-hoc watchers, or `systemctl --user` when units are active |
 | `make watch-status` | Running or not, heartbeat, disc present |
 | `make install-service` | User units at login. Logs in `/var/log/ripknife` |

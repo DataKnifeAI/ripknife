@@ -1,4 +1,4 @@
-.PHONY: build install lint test run clean help watch-disc watch-rip watch-all watch-stop watch-restart watch-status trigger-map check-drive install-service uninstall-service
+.PHONY: build install lint test run clean help dev watch-disc watch-rip watch-all watch-stop watch-restart watch-status trigger-map check-drive install-service uninstall-service
 
 _THIS_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 RIPKNIFE_ROOT ?= $(_THIS_DIR)
@@ -25,6 +25,7 @@ help:
 	@echo "  run          Run ripknife CLI (pass ARGS='...')"
 	@echo "  watch-disc   Run disc-watcher --auto (Process 1, all /dev/sr*)"
 	@echo "  watch-rip    Run rip-watcher --auto (Process 2, one worker per drive)"
+	@echo "  dev          Developer: install if needed, then watch-all (logs/)"
 	@echo "  watch-all    Start both watchers detached (setsid + nohup → logs/)"
 	@echo "  watch-stop   Stop ad-hoc watchers, or systemd units if those are active"
 	@echo "  watch-restart Restart systemd units, or stop+start ad-hoc watchers"
@@ -71,6 +72,8 @@ watch-rip: install
 # when an agent/shell tears down that group with SIGTERM, watchers die silently
 # (nohup only ignores SIGHUP). Prefer systemd user units for always-on
 # (`make install-service`; see scripts/systemd/). Do not run both at once.
+dev: watch-all
+
 watch-all: install
 	@if systemctl --user is-active --quiet ripknife-disc-watcher.service 2>/dev/null \
 	    || systemctl --user is-active --quiet ripknife-rip-watcher.service 2>/dev/null; then \

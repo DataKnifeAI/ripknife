@@ -10,7 +10,7 @@ The map call returns JSON. Python writes the manifest. See [llm.md](llm.md). Per
 
 Several drives can rip at once. One drive never runs two `makemkvcon mkv` processes.
 
-Preferred always-on start is `make install-service`. Do not also run `make watch-all`. Logs for units: `/var/log/ripknife`. Ad-hoc logs: repo `logs/`.
+Preferred always-on start is `make install-service`. `make dev` runs the watchers in this checkout instead. Do not run both. Logs for units: `/var/log/ripknife`. Ad-hoc logs: repo `logs/`.
 
 ## Episodes
 
