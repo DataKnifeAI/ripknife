@@ -1,0 +1,57 @@
+# Ripknife disc-watcher (Process 1) — systemd *user* unit
+#
+# Preferred over a system-wide unit: runs as your user (optical + NAS mounts),
+# starts at login, and with linger starts at boot without a GUI session.
+#
+# Install / uninstall:
+#   make -C @RIPKNIFE_ROOT@ install-service
+#   make -C @RIPKNIFE_ROOT@ uninstall-service
+#
+# Manual (same as make install-service):
+#   mkdir -p ~/.config/systemd/user
+#   cp @RIPKNIFE_ROOT@/scripts/systemd/*.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   loginctl enable-linger "$USER"
+#   systemctl --user enable --now ripknife-disc-watcher.service
+#   systemctl --user enable --now ripknife-rip-watcher.service
+#
+# Status / logs:
+#   systemctl --user status ripknife-disc-watcher ripknife-rip-watcher
+#   journalctl --user -u ripknife-disc-watcher -f
+#   tail -F /var/log/ripknife/pipeline.log
+#
+# Stop make watch-all before enabling systemd (singleton flock; also pkill
+# vs Restart=always). Ad-hoc: make watch-all still writes to repo logs/.
+
+[Unit]
+Description=Ripknife disc-watcher (optical insert → scan/map)
+After=default.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@RIPKNIFE_ROOT@
+# HOME is the login user (MakeMKV config and the gitignored .env).
+Environment=HOME=%h
+Environment=PYTHONUNBUFFERED=1
+Environment=RIPKNIFE_TMP=@RIPKNIFE_ROOT@/.tmp
+Environment=TMPDIR=@RIPKNIFE_ROOT@/.tmp
+Environment=RIPKNIFE_DELETE_LOCAL_AFTER_NAS=1
+Environment=RIPKNIFE_LOGS=/var/log/ripknife
+# Source MakeMKV library path if present
+EnvironmentFile=-%h/.config/environment.d/makemkv.conf
+# OPENROUTER_API_KEY and optional model overrides. File is gitignored — see .env.example.
+# A missing file is ignored. A missing key does not write a manifest.
+EnvironmentFile=-@RIPKNIFE_ROOT@/.env
+ExecStart=@RIPKNIFE_ROOT@/.venv/bin/python @RIPKNIFE_ROOT@/scripts/disc-watcher.py --auto
+SyslogIdentifier=ripknife-disc-watcher
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=10
+# Kill only this service's main process; leave orphaned makemkvcon alone if any.
+KillMode=process
+
+[Install]
+WantedBy=default.target

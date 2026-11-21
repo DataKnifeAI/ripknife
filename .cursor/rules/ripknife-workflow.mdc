@@ -1,0 +1,61 @@
+---
+description: Ripknife git workflow, repo root, and rip conventions
+alwaysApply: true
+---
+
+# Ripknife agent workflow
+
+## Commit tool changes
+
+When you update Ripknife (code under `ripknife/`, `scripts/`, `tests/`, `Makefile`, `configs/`, `skills/`, or other tracked repo files), **commit to git as part of the workflow**. Do not leave substantial tool changes uncommitted unless the user explicitly says not to commit.
+
+Before committing:
+
+1. Run git from the repository root (the checkout that contains `ripknife/`).
+2. Stage only repo/tool files — never runtime artifacts or secrets.
+3. Use caveman-commit / Conventional Commits: `<type>(<scope>): <imperative summary>`, ≤50 chars when possible.
+
+## Never commit
+
+- `.venv/`, `output/`, `logs/`, ripped `*.mkv`, `.tmp/`
+- Staging workflow artifacts under `staging/` (pending/ready/done/failed job files)
+- Secrets: `.env`, `.env.*`, `*credentials*`, API keys
+- The personal library checkout (`ripknife-configs` or `RIPKNIFE_CONFIG_DIR`)
+- Generated per-disc manifests (`staging/`, and anything under `configs/` except `examples/`, `defaults.yaml`, `youtube.yaml`, `registry.yaml`)
+
+## Working storage vs library
+
+- The checkout is working storage: `output/`, `staging/`, `.tmp/` (`TMPDIR`)
+- The library share is separate. Roots come from `site.env` in the personal config dir or from `RIPKNIFE_ANIME_NAS`, `RIPKNIFE_SHOWS_NAS`, and `RIPKNIFE_MOVIES_NAS`
+- systemd file logs: `/var/log/ripknife`; ad-hoc `make watch-all`: repo `logs/`
+
+## Config split
+
+- Tool repo `configs/` holds examples and `defaults.yaml` only
+- Generated manifests are gitignored here. The rip reads `staging/ready`
+- When a manifest is generated, archive a copy in the sibling `ripknife-configs` checkout (`generated/`) for reference. Do not push that repo from the watcher
+- Personal manifests, `youtube.yaml`, `registry.yaml`, and `site.env` live in `RIPKNIFE_CONFIG_DIR`, or in a sibling directory named `ripknife-configs` when that checkout exists
+- One manifest per disc
+
+## Multi-disc movies
+
+- One manifest per disc; output name: `Title (Year) - Disc N.mkv`
+- When stitching parts: set `post.copy_to_nas: false` on each disc manifest
+- Rip discs independently; stitch runs post-rip via `ripknife/stitch.py` (rip-watcher hook)
+- Copy **only the stitched file** to the library after join — not per-disc masters
+- Non-theatrical cuts: set `output.edition` → Plex `{edition-…}` on masters and the stitched file
+
+## Library mapping
+
+- **Any cartoon or animation** (Western cartoon, Japanese anime, CG series, animated feature) → `Anime/`
+- Animated **series**: `nas.share: /path/to/library/Anime/<Show>` (never Shows)
+- Animated **movies**: `nas.movies: true` and `nas.share: /path/to/library/Anime/Movies` (Plex Movies-type library; a TV-type Anime library ignores root MKVs)
+- **Live-action TV** only → `/path/to/library/Shows/<Show>`
+- **Live-action movies** → `/path/to/library/Movies/`
+- Do not move already-copied series; this is future mapping/rip output only
+
+## Drives
+
+- Slot-loading drives: `eject -t` fails. Do not tell the operator to close a tray.
+- `eject -x` sets spindle speed. It does not close the slot. `eject -x 0` restores speed.
+- Do not copy a bad or gapped file to the library.

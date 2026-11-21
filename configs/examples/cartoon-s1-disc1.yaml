@@ -1,0 +1,21 @@
+kind: tv_disc
+meta:
+  id: example-cartoon-s1-disc1
+  show: Example Cartoon
+  season: 1
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Example Cartoon/Season 1
+nas:
+  share: /path/to/library/Anime/Example Cartoon
+  subdir: Season 1
+tracks:
+  - slot: 1
+    makemkv_title: 1
+    episode: "01"
+    title: Cold Open
+  - slot: 2
+    makemkv_title: 2
+    episode: "02"
+    title: Second Cartoon

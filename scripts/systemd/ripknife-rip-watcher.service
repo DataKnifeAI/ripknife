@@ -1,0 +1,32 @@
+# Ripknife rip-watcher (Process 2) — systemd *user* unit
+# See ripknife-disc-watcher.service for install instructions.
+# Logs: RIPKNIFE_LOGS=/var/log/ripknife (files) + user journal.
+
+[Unit]
+Description=Ripknife rip-watcher (ready manifests → rip)
+After=default.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=@RIPKNIFE_ROOT@
+Environment=HOME=%h
+Environment=PYTHONUNBUFFERED=1
+Environment=RIPKNIFE_TMP=@RIPKNIFE_ROOT@/.tmp
+Environment=TMPDIR=@RIPKNIFE_ROOT@/.tmp
+Environment=RIPKNIFE_DELETE_LOCAL_AFTER_NAS=1
+Environment=RIPKNIFE_LOGS=/var/log/ripknife
+EnvironmentFile=-%h/.config/environment.d/makemkv.conf
+# Same .env as disc-watcher (OPENROUTER_API_KEY). Missing file is ignored.
+EnvironmentFile=-@RIPKNIFE_ROOT@/.env
+ExecStart=@RIPKNIFE_ROOT@/.venv/bin/python @RIPKNIFE_ROOT@/scripts/rip-watcher.py --auto
+SyslogIdentifier=ripknife-rip-watcher
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=10
+KillMode=process
+
+[Install]
+WantedBy=default.target

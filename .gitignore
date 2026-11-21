@@ -1,0 +1,66 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+build/
+
+# Local runtime (rips, logs, locks)
+logs/
+output/
+.tmp/
+*.log
+*.mkv
+*.lock
+
+# Staging workflow artifacts (not configs/*.yaml)
+# Ignores pending/*.json, ready/*.yaml, done/*, failed/*, .probe*/.rip.*, etc.
+/staging/**
+!/staging/pending/
+!/staging/ready/
+!/staging/done/
+!/staging/failed/
+/staging/pending/**
+!/staging/pending/.gitkeep
+/staging/ready/**
+!/staging/ready/.gitkeep
+/staging/done/**
+!/staging/done/.gitkeep
+/staging/failed/**
+!/staging/failed/.gitkeep
+
+# Generated per-disc configs. The rip queue is staging/ready (ignored above).
+# Tracked samples stay: examples/, defaults.yaml, youtube.yaml, registry.yaml.
+/configs/*
+!/configs/examples/
+!/configs/examples/**
+!/configs/defaults.yaml
+!/configs/youtube.yaml
+!/configs/registry.yaml
+
+# Secrets
+.env
+.env.*
+!.env.example
+*credentials*
+
+# Editor
+.idea/
+.vscode/
+
+# Pytest basetemp / local test dirs (not source under tests/)
+.pytest-tmp/
+pytest-of-*/
+
+# Process / shell spill (watchers, manual runs)
+nohup.out
+nohup*.log
+
+# Editor local state. The tracked project rule is .cursor/rules.
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**

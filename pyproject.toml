@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ripknife"
+version = "0.1.0"
+description = "Rip Blu-ray and DVD from a slot drive into a media library."
+readme = "README.md"
+keywords = [
+    "bluray",
+    "dvd",
+    "makemkv",
+    "plex",
+    "disc-ripper",
+    "python",
+    "media-library",
+    "optical-disc",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+]
+
+[project.scripts]
+ripknife = "ripknife.cli:app"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["ripknife*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+# Game-drive basetemp — tests write multi-GB fixtures (post_rip_verify); default /tmp tmpfs fills fast.
+addopts = ["--basetemp=.pytest-tmp"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

@@ -1,0 +1,12 @@
+# Example disc registry. This install's real registry lives in the personal
+# config directory (RIPKNIFE_CONFIG_DIR or a sibling ripknife-configs checkout)
+# and is preferred when that file exists.
+#
+# match entries: exact strings (case-insensitive), substrings, or regex patterns.
+
+entries:
+  - id: example-show-s1-disc1
+    manifest: configs/examples/show-s1-disc1.yaml
+    match:
+      - "EXAMPLE SHOW S1D1"
+      - "(?i)example show.*season 1.*disc 1"

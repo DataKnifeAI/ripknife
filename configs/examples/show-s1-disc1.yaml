@@ -1,0 +1,32 @@
+kind: tv_disc
+meta:
+  id: example-show-s1-disc1
+  show: Example Show
+  season: 1
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Example Show/Season 1
+nas:
+  share: /path/to/library/Shows/Example Show
+  subdir: Season 1
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    episode: "01"
+    title: First Episode
+  - slot: 2
+    makemkv_title: 1
+    episode: "02"
+    title: Second Episode
+  - slot: 3
+    makemkv_title: 2
+    episode: "03"
+    title: Third Episode
+  - slot: 4
+    makemkv_title: 3
+    episode: "04"
+    title: Fourth Episode

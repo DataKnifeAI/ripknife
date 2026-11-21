@@ -1,0 +1,26 @@
+kind: movie
+meta:
+  id: example-movie-1991
+  title: Example Movie (1991)
+  disc_name: DVD_VIDEO
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  dir: Movies
+  filename: Example Movie (1991).mkv
+nas:
+  movies: true
+  share: /path/to/library/Movies
+post:
+  eject: true
+  copy_to_nas: true
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+title_selection:
+  mode: fixed
+  title: 0
+validation:
+  min_duration_sec: 5400
+skips:
+  - { makemkv_title: 1, reason: duplicate title }

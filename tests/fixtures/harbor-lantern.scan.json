@@ -1,0 +1,19 @@
+{
+  "disc_name": "HARBOR_LANTERN",
+  "titles": [
+    {
+      "index": 0,
+      "name": "Trailer",
+      "duration": "0:01:30",
+      "duration_sec": 90,
+      "size_bytes": 80000000
+    },
+    {
+      "index": 1,
+      "name": "Harbor Lantern",
+      "duration": "1:42:00",
+      "duration_sec": 6120,
+      "size_bytes": 3500000000
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+kind: movie
+meta:
+  id: example-feature-2001-disc1
+  title: Example Feature (2001)
+  disc_name: EXAMPLE_FEATURE_D1
+  part: 1
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  dir: Movies
+  filename: Example Feature (2001) - Disc 1.mkv
+nas:
+  movies: true
+  share: /path/to/library/Movies
+post:
+  eject: true
+  copy_to_nas: false
+stitch:
+  enabled: true
+  group_id: example-feature-2001
+  expected_parts: 2
+  output_filename: Example Feature (2001).mkv
+  copy_to_nas: true
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: eng
+title_selection:
+  mode: fixed
+  title: 0
+validation:
+  min_duration_sec: 7200

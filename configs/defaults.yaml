@@ -1,0 +1,114 @@
+# Default Ripknife settings (documentation template only — NOT loaded or merged at runtime)
+# Copy sections into per-disc manifests in the personal config directory
+# (RIPKNIFE_CONFIG_DIR, or a sibling ripknife-configs checkout).
+# LLM mapper: always set meta.disc_name from scan; document title picks in YAML
+# comments when obfuscation/decoys/scene-jumps apply (see docs/pipeline.md).
+
+# --- Shared meta (all kinds) ---
+meta:
+  device: dev:/dev/sr0           # override via RIPKNIFE_DEVICE env
+  minlength: 300                 # seconds; use the same value for scan and rip
+  # disc_name: set per disc from MakeMKV scan (required for watcher verification)
+
+# --- Local paths (documentation only; runtime values from ripknife/paths.py) ---
+paths:
+  root: /path/to/ripknife            # RIPKNIFE_ROOT — defaults to the checkout
+  output: output                         # RIPKNIFE_OUTPUT (relative to root)
+  staging: staging                       # RIPKNIFE_STAGING
+  logs: logs                             # RIPKNIFE_LOGS (make watch-all); systemd → /var/log/ripknife
+  tmp: .tmp                              # RIPKNIFE_TMP / TMPDIR — not /tmp tmpfs
+  # Library roots (doc only — set nas.share per manifest, or site.env)
+  nas_anime: /path/to/library/Anime/     # cartoons, anime, ANY animation (series + features)
+  nas_shows: /path/to/library/Shows/     # live-action TV only
+  nas_movies: /path/to/library/Movies/   # live-action feature films
+
+# --- Library destination (schema: nas.share, nas.movies, nas.subdir) ---
+nas:
+  # tv_disc cartoons/anime: /path/to/library/Anime/<Show>
+  # tv_disc live-action:    /path/to/library/Shows/<Show>
+  # animated movie:         /path/to/library/Anime/Movies
+  # live-action movie:      /path/to/library/Movies
+  # omit or null → paths.NAS_SHARE (env RIPKNIFE_NAS or site.env)
+  share: null
+
+post:
+  eject: true                    # eject after successful real rip only; never scan/dry-run/validate
+  copy_to_nas: true              # copy finished files after rip (false on multi-disc parts)
+  delete_local_after_nas: false  # remove local MKV after verified copy (Makefile/systemd set env=1)
+
+monitor:
+  stall_timeout_sec: 900         # movies: no PRGV/file growth (TV default 600s via code/env)
+  open_timeout_sec: 600          # disc open / preflight makemkv info timeout
+  on_stall: exit                 # exit (kill makemkv) or warn
+
+retry:
+  count: 1                       # retries after first failure (1 = 2 total attempts); TV continues other slots
+  delay_sec: 30                  # seconds to wait before retry (no eject between retries)
+  stall_retry: true              # retry same title after stall timeout (uses count)
+  nas_retries: 1                 # extra rsync attempts; then ALERT and continue rip
+
+# =============================================================================
+# TV disc overrides (kind: tv_disc) — copy into a per-disc manifest
+# =============================================================================
+#
+# meta:
+#   id: example-show-s1-disc1
+#   show: Example Show
+#   season: 1
+#   # min_episode_sec: 360  # optional; default 480. Use ~360 for theatrical shorts
+# output:
+#   season_dir: Example Show/Season 1
+# nas:
+#   share: /path/to/library/Shows/Example Show   # live-action; cartoons → Anime/<Show>
+#   subdir: Season 1
+# tracks:
+#   - { slot: 1, makemkv_title: 0, episode: "01", title: Episode Title }
+# skips:
+#   - { makemkv_title: 0, reason: play-all }
+#
+# --- Cartoon / animation series — Anime library, not Shows ---
+# meta:
+#   show: Example Cartoon
+#   season: 1
+# output:
+#   season_dir: Example Cartoon/Season 1
+# nas:
+#   share: /path/to/library/Anime/Example Cartoon
+#   subdir: Season 1
+# stream_defaults:
+#   keep_all_tracks: true
+#   audio_default: eng
+#
+# --- Japanese audio + English subs ---
+# stream_defaults:
+#   keep_all_tracks: true
+#   audio_default: jpn
+#   subtitle_default: eng
+#
+# stream_defaults guidance:
+#   - Japanese anime: jpn audio + eng subs
+#   - English cartoons / live-action shows: eng audio, omit subtitle_default
+#   - Any cartoon or animation → Anime/<Show> (never Shows)
+#   - Shows: live-action TV only → Shows/<Show>
+#   - keep_all_tracks: true selects all audio/subs during the rip
+
+# =============================================================================
+# Movie overrides (kind: movie) — one manifest per disc
+# =============================================================================
+#
+# meta:
+#   id: example-movie-2011
+#   title: Example Movie (2011)
+#   disc_pattern: EXAMPLE_MOVIE
+# output:
+#   dir: Movies
+#   filename: Example Movie (2011).mkv
+#   # edition: Extended Edition  # → Example Movie (2011) {edition-Extended Edition}.mkv
+# nas:
+#   movies: true
+#   share: /path/to/library/Movies/      # live-action; animated features → Anime/Movies
+# # Multi-disc: one YAML per disc; output Title (Year) - Disc N.mkv locally;
+# # post.copy_to_nas: false; stitch.enabled + copy_to_nas on stitch copies the join only.
+# title_selection:
+#   mode: auto_feature
+#   min_duration_sec: 4800

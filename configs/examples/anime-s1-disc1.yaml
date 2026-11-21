@@ -1,0 +1,45 @@
+kind: tv_disc
+meta:
+  id: example-anime-s1-disc1
+  show: Example Anime
+  season: 12
+  device: dev:/dev/sr0
+  minlength: 300
+output:
+  season_dir: Example Anime/Season 12
+nas:
+  share: /path/to/library/Anime/Example Anime
+  subdir: Season 12
+stream_defaults:
+  keep_all_tracks: true
+  audio_default: jpn
+  subtitle_default: eng
+tracks:
+  - slot: 1
+    makemkv_title: 0
+    episode: "249"
+    title: First Chapter
+  - slot: 2
+    makemkv_title: 1
+    episode: "250"
+    title: Second Chapter
+  - slot: 3
+    makemkv_title: 2
+    episode: "251"
+    title: Third Chapter
+  - slot: 4
+    makemkv_title: 3
+    episode: "252"
+    title: Fourth Chapter
+  - slot: 5
+    makemkv_title: 4
+    episode: "253"
+    title: Fifth Chapter
+  - slot: 6
+    makemkv_title: 5
+    episode: "254"
+    title: Sixth Chapter
+  - slot: 7
+    makemkv_title: 6
+    episode: "255"
+    title: Seventh Chapter

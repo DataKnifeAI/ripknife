@@ -1,0 +1,47 @@
+# Example YouTube show map. Disc watchers do not read this file.
+#
+# The personal map (RIPKNIFE_CONFIG_DIR or a sibling ripknife-configs checkout)
+# wins when that youtube.yaml exists. This file is the tracked example.
+#
+# Python is generic: load_youtube_map, match_youtube_show, parse_youtube_title,
+# build_youtube_plan. Numbering and the library live here.
+
+shows:
+  - kind: series
+    meta:
+      id: example-cartoon
+      show: Example Cartoon
+    animated: true
+    playlists:
+      - PLexamplecartoon01
+    nas:
+      share: /path/to/library/Anime/Example Cartoon
+      movies: false
+    rules:
+      - pattern: '(?i)S(?P<season>\d+)\s*:\s*Episode\s*(?P<episode>\d+)'
+        title_from:
+          split: "//"
+          pick: 0
+          strip_prefix:
+            - "{show} - "
+          strip_pattern:
+            - '(?i)\s*-?\s*FINALE\s*$'
+      - pattern: '(?i)SHORTS\s+(?P<episode>\d+)'
+        season: 0
+        title_from:
+          split: "//"
+          drop_equal:
+            - "{show}"
+          drop_match: '(?i)SHORTS\s+\d+'
+          keep_after: ":"
+      - pattern: '(?i)SPECIAL:\s*ZERO'
+        season: 1
+        episode: "0"
+        title: Special Zero
+      - season: 0
+        episode: "{index}"
+        title_from:
+          split: "//"
+          pick: 0
+          strip_prefix:
+            - "{show} - "
