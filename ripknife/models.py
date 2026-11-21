@@ -22,6 +22,14 @@ class SkipEntry(BaseModel):
     makemkv_title: int
     reason: str = ""
 
+    @model_validator(mode="before")
+    @classmethod
+    def index_is_makemkv_title(cls, value: object) -> object:
+        """Scan titles use ``index``. A map reply may copy that key onto a skip."""
+        if not isinstance(value, dict) or "makemkv_title" in value or "index" not in value:
+            return value
+        return {**value, "makemkv_title": value["index"]}
+
 
 class SplitOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -280,6 +288,14 @@ class TitleSelection(BaseModel):
     min_duration_sec: int = Field(default=80 * 60, ge=0)
     min_size_bytes: int = Field(default=MIN_SIZE_FLOOR_BYTES, ge=0)
 
+    @model_validator(mode="before")
+    @classmethod
+    def fixed_title_is_title(cls, value: object) -> object:
+        """A map reply may name the scan index ``fixed_title``."""
+        if not isinstance(value, dict) or "title" in value or "fixed_title" not in value:
+            return value
+        return {**value, "title": value["fixed_title"]}
+
 
 class ValidationRules(BaseModel):
     min_duration_sec: int = Field(default=80 * 60, ge=0)
@@ -366,6 +382,10 @@ class MovieManifest(BaseModel):
 
     @model_validator(mode="after")
     def validate_movie_output(self) -> MovieManifest:
+        if not self.output.dir:
+            self.output.dir = "Movies"
+        if not self.output.filename and self.meta.title.strip():
+            self.output.filename = f"{self.meta.title.strip()}.mkv"
         if not self.output.dir or not self.output.filename:
             raise ValueError("movie manifests require output.dir and output.filename")
         if self.title_selection.mode == "fixed" and self.title_selection.title is None:

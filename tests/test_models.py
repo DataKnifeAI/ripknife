@@ -12,6 +12,7 @@ from ripknife.models import (
     MIN_SIZE_FLOOR_BYTES,
     MovieManifest,
     RetryConfig,
+    SkipEntry,
     SplitConfig,
     SplitOutput,
     StreamDefaultsConfig,
@@ -171,6 +172,39 @@ def test_load_manifest_movie() -> None:
     assert manifest.stream_defaults.audio_default == "eng"
     assert manifest.stream_defaults.subtitle_default is None
     assert manifest.stream_defaults.keep_all_tracks is True
+
+
+def test_movie_map_reply_fills_dir_and_fixed_title() -> None:
+    manifest = MovieManifest.model_validate(
+        {
+            "kind": "movie",
+            "meta": {"id": "example-movie-1991", "title": "Example Movie (1991)"},
+            "output": {
+                "filename": "Example Movie (1991) {edition-Extended Edition}.mkv",
+                "edition": "Extended Edition",
+            },
+            "title_selection": {"mode": "fixed", "fixed_title": 2},
+        }
+    )
+    assert manifest.output.dir == "Movies"
+    assert manifest.title_selection.title == 2
+    bare = MovieManifest.model_validate(
+        {
+            "kind": "movie",
+            "meta": {"id": "example-movie-1991", "title": "Example Movie (1991)"},
+            "output": {},
+            "title_selection": {"mode": "auto_feature"},
+        }
+    )
+    assert bare.output.filename == "Example Movie (1991).mkv"
+
+
+def test_skip_entry_accepts_scan_index() -> None:
+    entry = SkipEntry.model_validate({"index": 3, "reason": "extra"})
+    assert entry.makemkv_title == 3
+    assert entry.reason == "extra"
+    kept = SkipEntry.model_validate({"makemkv_title": 2, "index": 9, "reason": "extra"})
+    assert kept.makemkv_title == 2
 
 
 def test_load_movie_stream_defaults_and_skip() -> None:

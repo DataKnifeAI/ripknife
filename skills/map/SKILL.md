@@ -113,6 +113,9 @@ Manifest requirements:
 - Map episodes using TheTVDB DVD order (TV) or official order (live-action); movies use title_selection + validation floors
 - Do not treat sequential MakeMKV title numbers as episode numbers (see TV episode order above)
 - skips[] for play-all, extras, decoy playlists, skipped angles, suspicious loops
+- Each skips[] entry is `{ makemkv_title, reason }`. `makemkv_title` is the scan title index.
+- A movie sets `output.dir` to `Movies` and `output.filename` to `Title (Year).mkv`. Put the cut name in `output.edition`.
+- `title_selection.mode: fixed` sets `title_selection.title` to the scan index of the feature.
 - Each tracks[].makemkv_title must exist in scan, meet minlength, and match expected duration (~7 min theatrical shorts, ~11 min TV cartoons, ~47 min drama, ~23 min anime)
 - Always set stream_defaults (required for correct player audio/subs):
   - English-language movies / live-action TV / English cartoons: keep_all_tracks true, audio_default eng, omit subtitle_default
