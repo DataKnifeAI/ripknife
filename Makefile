@@ -1,4 +1,4 @@
-.PHONY: build install lint test run clean help dev watch-disc watch-rip watch-all watch-stop watch-restart watch-status trigger-map check-drive install-service uninstall-service
+.PHONY: build install lint test run clean help package dev watch-disc watch-rip watch-all watch-stop watch-restart watch-status trigger-map check-drive install-service uninstall-service
 
 _THIS_DIR := $(patsubst %/,%,$(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 RIPKNIFE_ROOT ?= $(_THIS_DIR)
@@ -19,13 +19,14 @@ DISC_ID ?=
 help:
 	@echo "Ripknife Makefile targets:"
 	@echo "  install      Create/refresh .venv and install package with dev extras"
+	@echo "  package      Source package dist/ripknife-<version>.tar.gz from HEAD"
 	@echo "  build        Alias for install"
 	@echo "  lint         Run ruff on ripknife/ and tests/"
 	@echo "  test         Run pytest unit tests"
 	@echo "  run          Run ripknife CLI (pass ARGS='...')"
 	@echo "  watch-disc   Run disc-watcher --auto (Process 1, all /dev/sr*)"
 	@echo "  watch-rip    Run rip-watcher --auto (Process 2, one worker per drive)"
-	@echo "  dev          Developer: install if needed, then watch-all (logs/)"
+	@echo "  dev          Cloned checkout: install if needed, then watch-all (logs/)"
 	@echo "  watch-all    Start both watchers detached (setsid + nohup → logs/)"
 	@echo "  watch-stop   Stop ad-hoc watchers, or systemd units if those are active"
 	@echo "  watch-restart Restart systemd units, or stop+start ad-hoc watchers"
@@ -44,6 +45,13 @@ install: $(VENV)/bin/python
 	$(PIP) install -e ".[dev]"
 
 build: install
+
+package:
+	@version=$$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml); \
+	mkdir -p dist; \
+	git archive --format=tar.gz --prefix="ripknife-$$version/" \
+		-o "dist/ripknife-$$version.tar.gz" HEAD; \
+	echo "dist/ripknife-$$version.tar.gz"
 
 lint:
 	$(VENV)/bin/ruff check ripknife/ tests/

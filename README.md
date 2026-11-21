@@ -13,17 +13,17 @@ A disc of episodes becomes one file per episode. A movie that spans discs is joi
 ## Install
 
 ```bash
-git clone https://github.com/DataKnifeAI/ripknife.git && cd ripknife && make install && cp -n .env.example .env
+curl -fsSL https://raw.githubusercontent.com/DataKnifeAI/ripknife/main/scripts/install.sh | sh
 ```
 
-Put an OpenRouter key in `.env`. Point Ripknife at your library folders. That is the one-time setup.
+That installs the latest release to `~/.local/share/ripknife` and starts it. Put an OpenRouter key in `~/.local/share/ripknife/.env`. Point Ripknife at your library folders.
 
 ## Developer
 
-Run the watchers in this checkout, without installing a service:
+A clone runs in that checkout, not from the release:
 
 ```bash
-make dev
+git clone https://github.com/DataKnifeAI/ripknife.git && cd ripknife && make dev
 ```
 
 Logs are in `logs/`. Stop with `make watch-stop`.

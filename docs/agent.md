@@ -22,7 +22,7 @@ Leave the drive alone. Do not start a second rip on it, run `recover`, or image 
 
 Do not `daemon-reload`, restart the user units, or run `make watch-restart` until the rip has finished. `daemon-reload` applies unit changes to the next start only.
 
-`make install-service` is the always-on path. `make dev` runs the watchers in this checkout instead. Do not run both. Stop the ad-hoc watchers before enabling the units.
+`scripts/install.sh` installs the latest GitHub release under `~/.local/share/ripknife` and starts the user units. `make dev` is the cloned checkout: it installs the dev extras if needed and runs the watchers there. Do not run both. Stop the ad-hoc watchers before enabling the units.
 
 ## Config
 
@@ -91,7 +91,9 @@ make uninstall-service
 | `make lint` / `make test` | ruff / pytest |
 | `make run ARGS="..."` | CLI passthrough |
 | `make check-drive` | Optical drive and LibreDrive |
-| `make dev` | Developer run: install if needed, then both watchers. Logs in `logs/` |
+| `scripts/install.sh` | Latest release package. Not a clone |
+| `make package` | `dist/ripknife-<version>.tar.gz` from `HEAD` |
+| `make dev` | Cloned checkout: install if needed, then both watchers. Logs in `logs/` |
 | `make watch-all` | Same watchers as `make dev`, without the developer name |
 | `make watch-stop` / `make watch-restart` | Stop or restart ad-hoc watchers, or `systemctl --user` when units are active |
 | `make watch-status` | Running or not, heartbeat, disc present |
