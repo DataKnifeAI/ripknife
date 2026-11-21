@@ -29,3 +29,7 @@ git clone https://github.com/DataKnifeAI/ripknife.git && cd ripknife && make dev
 Logs are in `logs/`. Stop with `make watch-stop`.
 
 How the pipeline works, and how to change this repo, is in [docs/](docs/agent.md).
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

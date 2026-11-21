@@ -7,6 +7,10 @@ name = "ripknife"
 version = "0.1.1"
 description = "Rip Blu-ray and DVD from a slot drive into a media library."
 readme = "README.md"
+license = { file = "LICENSE" }
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+]
 keywords = [
     "bluray",
     "dvd",
